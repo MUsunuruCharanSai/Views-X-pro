@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Environments & Secrets
+.env
+.venv
+env/
+venv/
+ENV/
+user_settings.json
+job_history.json
+facecam_presets.json
+
+# Brand Logos (only default assets are tracked in Git; all custom user logos stay local)
+assets/*
+!assets/logo.png
+!assets/subscribe.gif
+!assets/like.gif
+
+# Binaries & Tunnels
+cloudflared.exe
+*.exe
+
+# Large media files (prevent committing heavy video/audio downloads)
+downloads/*
+!downloads/.gitkeep
+clips/*
+!clips/.gitkeep
+temp/*
+!temp/.gitkeep
+logs/*
+!logs/.gitkeep
+scratch_frames/
+
+# Checkpoint snapshots & snapshot restore scripts
+_*_snapshot/
+create_*_snapshot.py
+restore_to_*.py
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

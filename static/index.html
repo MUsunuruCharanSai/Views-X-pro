@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Views X Pro — Automated AI YouTube Shorts generator with viral moment detection, smart face tracking, and 1080p/1440p/4K output.">
+    <title>Views X Pro</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="/static/style.css?v=10.2">
+</head>
+<body>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<div class="app-container">
+
+    <!-- ── Header ─────────────────────────────────────────────── -->
+    <header class="app-header">
+        <div class="brand">
+            <div class="brand-icon">🎬</div>
+            <div class="brand-text">
+                <h1>Views X <span class="version-badge">Pro</span></h1>
+                <p class="subtitle">1080p · 1440p · 4K &nbsp;•&nbsp; AI Hook Detection &nbsp;•&nbsp; Smart Face Tracking</p>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="header-status">
+                <span class="status-dot"></span>
+                <span id="system-status">System Ready</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-content">
+
+        <!-- ── API Key Warning ──────────────────────────────────── -->
+        <div id="api-key-warning" class="api-warning-banner">
+            <span class="api-warning-icon">⚠️</span>
+            <span>No API key configured — clips will use <strong>heuristic mode</strong> instead of AI analysis.
+            <a id="api-key-warning-link">Add your key in Settings ↓</a></span>
+        </div>
+
+        <!-- ── Hero URL Input ──────────────────────────────────── -->
+        <section class="card hero-card">
+            <div class="card-header">
+                <div class="card-title-group">
+                    <h2>Paste YouTube Video URL</h2>
+                    <p class="text-muted">Drop any YouTube link — AI detects viral moments and exports 9:16 Shorts.</p>
+                </div>
+            </div>
+
+            <div class="url-row">
+                <div class="url-input-box">
+                    <span class="url-icon">🔗</span>
+                    <input type="url" id="youtube-url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" spellcheck="false">
+                </div>
+                <button id="generate-btn" class="btn btn-primary btn-generate">
+                    <span class="btn-icon">🚀</span>
+                    <span class="btn-text">Generate Shorts</span>
+                </button>
+            </div>
+
+            <!-- Video Preview -->
+            <div id="video-preview-card" class="preview-card hidden">
+                <img id="preview-thumb" src="" alt="Video thumbnail">
+                <div class="preview-meta">
+                    <div id="preview-title"></div>
+                    <div class="preview-details">
+                        <span id="preview-uploader">📺</span>
+                        <span id="preview-duration">⏱</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Resolution Tier Selector -->
+            <div class="tier-selector">
+                <span class="section-label">Output Quality</span>
+                <div class="tier-grid">
+                    <label id="tier-btn-1080p" class="tier-option">
+                        <input type="radio" name="resolution_tier" value="1080p">
+                        <span class="tier-title">1080p</span>
+                        <span class="tier-desc">1080×1920 · Fast</span>
+                    </label>
+                    <label id="tier-btn-1440p" class="tier-option active">
+                        <input type="radio" name="resolution_tier" value="1440p" checked>
+                        <span class="tier-title">1440p ★</span>
+                        <span class="tier-desc">1440×2560 · Best</span>
+                    </label>
+                    <label id="tier-btn-4k" class="tier-option">
+                        <input type="radio" name="resolution_tier" value="4k">
+                        <span class="tier-title">4K</span>
+                        <span class="tier-desc">2160×3840 · Ultra</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Per-Run API Key Override -->
+            <div class="api-key-accordion">
+                <details>
+                    <summary>🔑 Per-Run API Key Override <span class="optional-tag">optional</span></summary>
+                    <div class="api-input-wrapper">
+                        <input type="password" id="api-key-input" placeholder="Leave blank to use saved Settings key">
+                    </div>
+                </details>
+            </div>
+        </section>
+
+        <!-- ── Content Mode + Brand Logo (side by side) ─────────── -->
+        <div class="config-row">
+
+            <!-- Content Mode Selector -->
+            <section class="card config-card" id="content-mode-card">
+                <div class="card-header">
+                    <div class="card-title-group">
+                        <h2>Content Mode</h2>
+                        <p class="text-muted">How should the 9:16 frame be composed?</p>
+                    </div>
+                    <span id="mode-status-badge" class="status-chip chip-cyan">Desktop Streamer</span>
+                </div>
+                <div class="mode-grid">
+                    <button type="button" id="mode-desktop-btn" class="mode-tile mode-tile-active" data-mode="desktop">
+                        <span class="mode-tile-icon">🖥️</span>
+                        <span class="mode-tile-body">
+                            <span class="mode-tile-title">Desktop Streamer</span>
+                            <span class="mode-tile-sub">Full 16:9 · black letterbox</span>
+                        </span>
+                        <span class="mode-tile-check">✓</span>
+                    </button>
+                    <button type="button" id="mode-irl-btn" class="mode-tile" data-mode="irl">
+                        <span class="mode-tile-icon">👤</span>
+                        <span class="mode-tile-body">
+                            <span class="mode-tile-title">IRL / General</span>
+                            <span class="mode-tile-sub">Smart face reframe</span>
+                        </span>
+                        <span class="mode-tile-check">✓</span>
+                    </button>
+                </div>
+            </section>
+
+            <!-- Channel Brand Logo Selector -->
+            <section class="card config-card" id="channel-logo-card">
+                <div class="card-header">
+                    <div class="card-title-group">
+                        <h2>Channel Brand</h2>
+                        <p class="text-muted">Logo overlaid in the top letterbox bar.</p>
+                    </div>
+                    <span id="logo-status-badge" class="status-chip chip-cyan">Default Logo</span>
+                </div>
+                <div class="logo-grid" id="logo-selector-grid">
+                    <!-- Populated by JS / fallback static items below -->
+                    <button type="button" class="logo-tile active" data-logo="logo.png">
+                        <div class="logo-tile-thumb">
+                            <img src="/assets/logo.png" alt="Default Logo">
+                        </div>
+                        <div class="logo-tile-info">
+                            <span class="logo-tile-name">Default Logo</span>
+                            <span class="logo-tile-tag">Views X Pro</span>
+                        </div>
+                        <span class="logo-tile-check">✓</span>
+                    </button>
+                    <button type="button" class="logo-tile logo-tile-none" data-logo="none">
+                        <div class="logo-tile-thumb logo-tile-thumb-none">
+                            <span>—</span>
+                        </div>
+                        <div class="logo-tile-info">
+                            <span class="logo-tile-name">No Logo</span>
+                            <span class="logo-tile-tag">Clean bar</span>
+                        </div>
+                        <span class="logo-tile-check">✓</span>
+                    </button>
+                </div>
+            </section>
+
+        </div><!-- /.config-row -->
+
+        <!-- ── Facecam Auto-Calibration Panel ─────────────────── -->
+        <section class="card collapsible-card" id="facecam-card">
+            <details id="facecam-details">
+                <summary class="collapsible-summary">
+                    <div class="summary-left">
+                        <div class="summary-icon-wrap">🎯</div>
+                        <div class="summary-text-group">
+                            <span class="summary-title">Per-Channel Facecam Auto-Calibration</span>
+                            <span class="summary-subtitle">Auto-detect streamer facecam regions with MediaPipe</span>
+                        </div>
+                    </div>
+                    <div class="summary-right">
+                        <div class="summary-chevron-wrap">
+                            <span class="summary-chevron">›</span>
+                        </div>
+                    </div>
+                </summary>
+                <div class="collapsible-body">
+                    <p class="text-muted collapsible-intro">
+                        Calibrate a streamer's channel by analyzing sample frames with MediaPipe.
+                        Saves their facecam region for all future clips automatically.
+                    </p>
+                    <div class="calibrate-row">
+                        <input type="url" id="calibrate-url-input" class="url-input-inline" placeholder="Paste a YouTube URL from the channel to calibrate…" autocomplete="off">
+                        <button type="button" id="calibrate-btn" class="btn btn-accent">🎯 Calibrate Channel</button>
+                    </div>
+                    <div class="presets-header-row">
+                        <span class="presets-header-title">Saved Channel Presets</span>
+                        <button type="button" id="refresh-presets-btn" class="btn btn-ghost btn-xs">🔄 Refresh Presets</button>
+                    </div>
+                    <div id="presets-list" class="presets-list">
+                        <div class="presets-empty">No presets saved yet. Calibrate a channel to get started.</div>
+                    </div>
+                </div>
+            </details>
+        </section>
+
+        <!-- ── Settings Panel ──────────────────────────────────── -->
+        <section class="card collapsible-card" id="settings-card">
+            <details id="settings-details">
+                <summary class="collapsible-summary">
+                    <div class="summary-left">
+                        <div class="summary-icon-wrap">⚙️</div>
+                        <div class="summary-text-group">
+                            <span class="summary-title">Settings &amp; Behavior Tuning</span>
+                            <span class="summary-subtitle">Google Gemini API key, confidence threshold, duration boundaries</span>
+                        </div>
+                    </div>
+                    <div class="summary-right">
+                        <span id="settings-saved-toast" class="save-chip hidden">✓ Saved</span>
+                        <div class="summary-chevron-wrap">
+                            <span class="summary-chevron">›</span>
+                        </div>
+                    </div>
+                </summary>
+                <div class="collapsible-body">
+                    <form id="settings-form" class="settings-grid">
+
+                        <div class="form-group full-width">
+                            <label for="set-gemini-key">Google Gemini API Key (Google AI Studio)</label>
+                            <input type="password" id="set-gemini-key" placeholder="AQ... or AIzaSy...">
+                            <small>Exclusively powered by Google Gemini (gemini-3.5-flash with ultra-fast fallback). Get your free key at <a href="https://aistudio.google.com" target="_blank" style="color:var(--cyan); text-decoration:underline;">aistudio.google.com</a></small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="set-clip-count">Target Clip Count (1–10)</label>
+                            <input type="number" id="set-clip-count" min="1" max="10" value="4">
+                            <small>How many viral moments to extract</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="set-confidence">Min Confidence Score (<span id="confidence-val">60%</span>)</label>
+                            <input type="range" id="set-confidence" min="0.0" max="1.0" step="0.05" value="0.6">
+                            <small>Lower = more clips but lower quality. 50–65% recommended.</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="set-spacing">Min Clip Spacing (seconds)</label>
+                            <input type="number" id="set-spacing" min="0" step="30" value="180">
+                            <small id="spacing-helper">Prevents clips from overlapping — 3 min gap default</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="set-min-dur">Min Clip Duration (sec)</label>
+                            <input type="number" id="set-min-dur" min="5" max="60" value="15">
+                            <small>TikTok/Reels: 15–30s. YouTube Shorts: up to 60s.</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="set-max-dur">Max Clip Duration (sec)</label>
+                            <input type="number" id="set-max-dur" min="15" max="180" value="90">
+                            <small>YouTube Shorts max is 60s. Instagram Reels max is 90s.</small>
+                        </div>
+
+                        <div class="form-group full-width">
+                            <div class="toggle-row">
+                                <input type="checkbox" id="set-flash-forward" checked>
+                                <div>
+                                    <label for="set-flash-forward">⚡ Flash-Forward Hook (2s Peak Preview)</label>
+                                    <small>Shows a 2-second teaser of the climax at the start of each clip to stop the scroll, then plays full story.</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group full-width">
+                            <button type="submit" class="btn btn-secondary">💾 Save Settings</button>
+                        </div>
+
+                    </form>
+                </div>
+            </details>
+        </section>
+
+        <!-- ── Pipeline Progress ──────────────────────────────── -->
+        <section id="progress-section" class="card hidden">
+            <div class="card-header">
+                <h3>Pipeline Progress</h3>
+                <span id="overall-percent" class="progress-badge">0%</span>
+            </div>
+
+            <div id="queue-status-banner" class="queue-banner hidden">
+                ⏳ Waiting for previous job to complete (single-job queue)…
+            </div>
+
+            <div class="pipeline-stages">
+                <div class="stage-item">
+                    <div class="stage-info">
+                        <span class="stage-name">1. Downloading Video</span>
+                        <span class="stage-status" id="status-download">Pending</span>
+                    </div>
+                    <div class="progress-track"><div class="progress-fill" id="fill-download"></div></div>
+                </div>
+                <div class="stage-item">
+                    <div class="stage-info">
+                        <span class="stage-name">2. Extracting Audio</span>
+                        <span class="stage-status" id="status-extract">Pending</span>
+                    </div>
+                    <div class="progress-track"><div class="progress-fill" id="fill-extract"></div></div>
+                </div>
+                <div class="stage-item">
+                    <div class="stage-info">
+                        <span class="stage-name">3. Fetching Transcript</span>
+                        <span class="stage-status" id="status-transcript">Pending</span>
+                    </div>
+                    <div class="progress-track"><div class="progress-fill" id="fill-transcript"></div></div>
+                </div>
+                <div class="stage-item">
+                    <div class="stage-info">
+                        <span class="stage-name">4. AI Hook Detection &amp; Scoring</span>
+                        <span class="stage-status" id="status-analyze">Pending</span>
+                    </div>
+                    <div class="progress-track"><div class="progress-fill" id="fill-analyze"></div></div>
+                </div>
+                <div class="stage-item">
+                    <div class="stage-info">
+                        <span class="stage-name">5. Cutting &amp; Encoding Shorts</span>
+                        <span class="stage-status" id="status-cut">Pending</span>
+                    </div>
+                    <div class="progress-track"><div class="progress-fill" id="fill-cut"></div></div>
+                </div>
+            </div>
+
+            <div class="terminal-wrap">
+                <div class="terminal-header">
+                    <div class="terminal-dots">
+                        <span class="dot dot-red"></span>
+                        <span class="dot dot-yellow"></span>
+                        <span class="dot dot-green"></span>
+                    </div>
+                    <span>Live Pipeline Log</span>
+                </div>
+                <div class="terminal-body" id="log-terminal"></div>
+            </div>
+        </section>
+
+        <!-- ── Results ─────────────────────────────────────────── -->
+        <section id="results-section" class="card hidden">
+            <div class="card-header">
+                <h3>Generated Viral Shorts</h3>
+                <div class="header-actions">
+                    <span id="clips-count-badge" class="count-badge">0 Clips</span>
+                    <a id="download-zip-btn" href="#" class="btn btn-secondary btn-sm hidden">📦 Download All (ZIP)</a>
+                </div>
+            </div>
+
+            <div id="analysis-banner" class="banner hidden"></div>
+            <div id="partial-success-note" class="banner banner-warning hidden"></div>
+
+            <!-- Skeleton placeholders -->
+            <div id="clips-skeleton" class="clips-grid hidden">
+                <div class="clip-skeleton"><div class="skeleton-video"></div><div class="skeleton-body"><div class="skeleton-line w80"></div><div class="skeleton-line w60"></div><div class="skeleton-line w40"></div></div></div>
+                <div class="clip-skeleton"><div class="skeleton-video"></div><div class="skeleton-body"><div class="skeleton-line w80"></div><div class="skeleton-line w60"></div><div class="skeleton-line w40"></div></div></div>
+                <div class="clip-skeleton"><div class="skeleton-video"></div><div class="skeleton-body"><div class="skeleton-line w80"></div><div class="skeleton-line w60"></div><div class="skeleton-line w40"></div></div></div>
+            </div>
+
+            <div id="clips-grid" class="clips-grid"></div>
+
+            <div id="empty-state" class="empty-state hidden">
+                <span class="empty-icon">📂</span>
+                <p>No clips were generated for this job.</p>
+            </div>
+        </section>
+
+        <!-- ── Storage ──────────────────────────────────────────── -->
+        <section class="card">
+            <div class="card-header">
+                <div class="header-title-group">
+                    <h3>Disk Storage</h3>
+                    <span id="storage-total-badge" class="count-badge">0 MB</span>
+                </div>
+                <button id="clear-storage-btn" class="btn btn-danger btn-sm">🗑 Clear Temp Files</button>
+            </div>
+            <div class="storage-grid">
+                <div class="storage-box">
+                    <div class="storage-box-label">Downloads Cache</div>
+                    <div class="storage-box-value" id="stat-downloads">0 MB</div>
+                </div>
+                <div class="storage-box">
+                    <div class="storage-box-label">Generated Clips</div>
+                    <div class="storage-box-value" id="stat-clips">0 MB</div>
+                </div>
+                <div class="storage-box">
+                    <div class="storage-box-label">Temp Files</div>
+                    <div class="storage-box-value" id="stat-temp">0 MB</div>
+                </div>
+                <div class="storage-box">
+                    <div class="storage-box-label">App Logs</div>
+                    <div class="storage-box-value" id="stat-logs">0 MB</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── Job History ─────────────────────────────────────── -->
+        <section class="card">
+            <div class="card-header">
+                <h3>Past Job History</h3>
+                <span id="history-count-badge" class="count-badge">0 Runs</span>
+            </div>
+            <div id="history-list" class="history-list"></div>
+        </section>
+
+    </main>
+</div>
+
+<script src="/static/app.js?v=10.1"></script>
+</body>
+</html>

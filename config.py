@@ -1,0 +1,158 @@
+"""Configuration module for Views X Pro."""
+
+import os
+from pathlib import Path
+from typing import Optional
+
+# Base directories
+BASE_DIR = Path(__file__).resolve().parent
+DOWNLOADS_DIR = BASE_DIR / "downloads"
+CLIPS_DIR = BASE_DIR / "clips"
+LOGS_DIR = BASE_DIR / "logs"
+TEMP_DIR = BASE_DIR / "temp"
+ASSETS_DIR = BASE_DIR / "assets"
+
+# Ensure directories exist
+for directory in [DOWNLOADS_DIR, CLIPS_DIR, LOGS_DIR, TEMP_DIR, ASSETS_DIR]:
+    directory.mkdir(parents=True, exist_ok=True)
+
+# Logo and subscribe asset paths are resolved dynamically via get_logo_path() / get_subscribe_path()
+
+
+
+def get_available_logos() -> list:
+    """Scan assets directory for brand logo images/gifs (excluding like/subscribe badges)."""
+    valid_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    logos = []
+    if ASSETS_DIR.exists():
+        for p in sorted(ASSETS_DIR.iterdir()):
+            if p.is_file() and p.suffix.lower() in valid_exts:
+                name_lower = p.stem.lower()
+                if name_lower.startswith(("like", "subscribe")):
+                    continue
+                display_name = p.stem.replace("_", " ").replace("-", " ").title()
+                logos.append({
+                    "id": p.name,
+                    "name": display_name,
+                    "filename": p.name,
+                    "url": f"/assets/{p.name}?v={int(p.stat().st_mtime)}"
+                })
+    return logos
+
+
+def get_logo_path(logo_name: Optional[str] = None) -> Optional[Path]:
+    """Find logo image/gif in assets directory.
+    
+    If logo_name is explicitly provided, look for that exact file or stem.
+    If logo_name is 'none', return None.
+    Otherwise, fallback to logo, brand, or the first available logo.
+    """
+    if logo_name and str(logo_name).lower().strip() == "none":
+        return None
+
+    if logo_name:
+        candidate = ASSETS_DIR / logo_name
+        if candidate.exists() and candidate.is_file():
+            return candidate
+        # Try with extensions
+        for ext in [".png", ".jpg", ".jpeg", ".webp", ".gif"]:
+            c = ASSETS_DIR / f"{logo_name}{ext}"
+            if c.exists() and c.is_file():
+                return c
+
+    # Fallback order if no specific logo requested or not found
+    for stem in ["logo", "brand"]:
+        for ext in [".png", ".jpg", ".jpeg", ".webp", ".gif"]:
+            p = ASSETS_DIR / f"{stem}{ext}"
+            if p.exists() and p.is_file():
+                return p
+
+    # General fallback: first available logo
+    available = get_available_logos()
+    if available:
+        return ASSETS_DIR / available[0]["filename"]
+    return None
+
+
+def get_subscribe_path() -> Optional[Path]:
+    """Find subscribe badge image/gif in assets directory (png, jpg, jpeg, webp, gif)."""
+    for ext in [".gif", ".png", ".jpg", ".jpeg", ".webp"]:
+        p = ASSETS_DIR / f"subscribe{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def get_like_path() -> Optional[Path]:
+    """Find like button image/gif in assets directory (png, jpg, jpeg, webp, gif)."""
+    for ext in [".gif", ".png", ".jpg", ".jpeg", ".webp"]:
+        p = ASSETS_DIR / f"like{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+# Selectable Resolution Tiers with YouTube-aligned Target/Max Bitrates & Buffer Sizes
+RESOLUTION_TIERS = {
+    "1080p": {
+        "height": 1080,
+        "output_w": 1080,
+        "output_h": 1920,
+        "h264_level": "4.2",
+        "target_bitrate": "8M",
+        "max_bitrate": "10M",
+        "bufsize": "16M",
+        "label": "1080p (Fast)"
+    },
+    "1440p": {
+        "height": 1440,
+        "output_w": 1440,
+        "output_h": 2560,
+        "h264_level": "5.1",
+        "target_bitrate": "16M",
+        "max_bitrate": "20M",
+        "bufsize": "32M",
+        "label": "1440p (Recommended)"
+    },
+    "4k": {
+        "height": 2160,
+        "output_w": 2160,
+        "output_h": 3840,
+        "h264_level": "5.2",
+        "target_bitrate": "35M",
+        "max_bitrate": "45M",
+        "bufsize": "70M",
+        "label": "4K (Best Quality, Slower)"
+    },
+}
+DEFAULT_RESOLUTION_TIER = "1440p"
+
+# Quality & Denoise Tuning
+DEFAULT_CRF = 18          # CPU libx264 high-quality CRF (18 = near-lossless, better than 19)
+DEFAULT_QSV_QUALITY = 18  # QSV high-quality global_quality
+DENOISE_FILTER = "hqdn3d=3:2:4:3"  # Optimal spatial/temporal denoise — removes camera sensor grain without blurring
+
+# Target clip duration range & constraints
+MIN_CLIP_DURATION_SEC = 15.0
+MAX_CLIP_DURATION_SEC = 90.0
+TARGET_CLIP_COUNT = 4
+MIN_CLIP_SPACING_SEC = 180.0  # 3 minutes minimum gap between clip start times
+MIN_CONFIDENCE_THRESHOLD = 0.6  # Minimum confidence score required to include a clip
+
+
+# Multi-factor scoring weights
+SCORING_WEIGHTS = {
+    "hook_strength": 0.30,
+    "emotional_intensity": 0.30,
+    "unexpectedness": 0.20,
+    "payoff_quality": 0.20,
+}
+
+# Gemini API Config (Google AI Studio)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"  # Primary flagship model (high viral reasoning + 1M context)
+FALLBACK_GEMINI_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]  # Ultra-fast secondary fallbacks
+
+# Log config
+LOG_FILE_PATH = LOGS_DIR / "app.log"
+
