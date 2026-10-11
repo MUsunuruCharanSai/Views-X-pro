@@ -100,6 +100,36 @@ def get_like_path() -> Optional[Path]:
 
 # Selectable Resolution Tiers with YouTube-aligned Target/Max Bitrates & Buffer Sizes
 RESOLUTION_TIERS = {
+    "480p": {
+        "height": 480,
+        "output_w": 480,
+        "output_h": 854,
+        "h264_level": "3.1",
+        "target_bitrate": "2M",
+        "max_bitrate": "2.5M",
+        "bufsize": "4M",
+        "label": "480p (Low Memory)",
+    },
+    "540p": {
+        "height": 540,
+        "output_w": 540,
+        "output_h": 960,
+        "h264_level": "3.1",
+        "target_bitrate": "2.5M",
+        "max_bitrate": "3M",
+        "bufsize": "5M",
+        "label": "540p (Low Memory)",
+    },
+    "720p": {
+        "height": 720,
+        "output_w": 720,
+        "output_h": 1280,
+        "h264_level": "3.1",
+        "target_bitrate": "4M",
+        "max_bitrate": "5M",
+        "bufsize": "8M",
+        "label": "720p",
+    },
     "1080p": {
         "height": 1080,
         "output_w": 1080,
@@ -131,19 +161,12 @@ RESOLUTION_TIERS = {
         "label": "4K (Best Quality, Slower)"
     },
 }
-# 1080p is the safe default for Railway / low-memory CPU encoding (no QSV)
+# Local default; Railway / FFMPEG_LOW_MEMORY hosts resolve to 480p via resolve_encode_tier()
 DEFAULT_RESOLUTION_TIER = "1080p"
 
-# FFmpeg thread budget — keep low to avoid OOM/SIGKILL on small containers
-def get_ffmpeg_thread_count() -> int:
-    raw = os.environ.get("FFMPEG_THREADS", "").strip()
-    if raw.isdigit():
-        return max(1, min(8, int(raw)))
-    low_mem = os.environ.get("FFMPEG_LOW_MEMORY", "").strip() in ("1", "true", "yes")
-    on_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
-    if low_mem or on_railway:
-        return 2
-    return min(2, os.cpu_count() or 2)
+# Bounded encode fallback ladder (never retry the same canvas after SIGKILL)
+ENCODE_FALLBACK_LADDER = ("720p", "540p", "480p")
+LOW_MEMORY_DEFAULT_TIER = "480p"
 
 
 def is_low_memory_host() -> bool:
@@ -153,15 +176,74 @@ def is_low_memory_host() -> bool:
     )
 
 
+# FFmpeg thread budget — single-threaded on low-memory hosts to limit RAM spikes
+def get_ffmpeg_thread_count() -> int:
+    raw = os.environ.get("FFMPEG_THREADS", "").strip()
+    if raw.isdigit():
+        return max(1, min(8, int(raw)))
+    if is_low_memory_host():
+        return 1
+    return min(2, os.cpu_count() or 2)
+
+
+def get_encode_preset() -> str:
+    """libx264 preset; ultrafast on low-memory hosts."""
+    raw = os.environ.get("FFMPEG_PRESET", "").strip()
+    if raw:
+        return raw
+    return "ultrafast" if is_low_memory_host() else "faster"
+
+
+def get_encode_crf() -> str:
+    """libx264 CRF; higher = smaller/faster on low-memory hosts."""
+    raw = os.environ.get("FFMPEG_CRF", "").strip()
+    if raw.isdigit():
+        return raw
+    return "28" if is_low_memory_host() else "18"
+
+
+def get_encode_audio_bitrate() -> str:
+    raw = os.environ.get("FFMPEG_AUDIO_BITRATE", "").strip()
+    if raw:
+        return raw
+    return "96k" if is_low_memory_host() else "192k"
+
+
 def resolve_encode_tier(tier: str) -> str:
-    """Downgrade heavy tiers on memory-constrained hosts (Railway)."""
+    """Resolve output canvas tier. Low-memory hosts default to 480p (override via FFMPEG_ENCODE_TIER)."""
+    override = os.environ.get("FFMPEG_ENCODE_TIER", "").strip().lower()
+    if override in RESOLUTION_TIERS:
+        return override
     tier = tier if tier in RESOLUTION_TIERS else DEFAULT_RESOLUTION_TIER
-    if is_low_memory_host() and tier in ("1440p", "4k"):
-        return "1080p"
+    if is_low_memory_host():
+        # Prefer 480p on Railway; never encode 1080p+ on constrained containers
+        if tier in ("4k", "1440p", "1080p"):
+            return LOW_MEMORY_DEFAULT_TIER
+        if tier in ENCODE_FALLBACK_LADDER:
+            return tier
+        return LOW_MEMORY_DEFAULT_TIER
     return tier
 
+
+def get_encode_fallback_ladder(start_tier: str) -> list:
+    """Return unique descending canvas tiers to try for one clip (no duplicate retries)."""
+    start = start_tier if start_tier in RESOLUTION_TIERS else (
+        LOW_MEMORY_DEFAULT_TIER if is_low_memory_host() else DEFAULT_RESOLUTION_TIER
+    )
+    ladder = list(ENCODE_FALLBACK_LADDER)
+    if start in ladder:
+        return ladder[ladder.index(start):]
+    # High-quality start (1080p+) then step down the low-mem ladder once each
+    start_w = RESOLUTION_TIERS[start]["output_w"]
+    result = [start]
+    for t in ladder:
+        if RESOLUTION_TIERS[t]["output_w"] < start_w:
+            result.append(t)
+    return result
+
+
 # Quality & Denoise Tuning
-DEFAULT_CRF = 18          # CPU libx264 high-quality CRF (18 = near-lossless, better than 19)
+DEFAULT_CRF = 18          # CPU libx264 high-quality CRF (local / high-RAM)
 DEFAULT_QSV_QUALITY = 18  # QSV high-quality global_quality
 DENOISE_FILTER = "hqdn3d=3:2:4:3"  # Optimal spatial/temporal denoise — removes camera sensor grain without blurring
 

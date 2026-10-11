@@ -228,15 +228,30 @@ class PipelineOrchestrator:
                 cancel_check=lambda: self.is_cancelled,
             )
 
+            generated = len(output_files)
+            if attempted_count > 0 and generated == 0:
+                raise RuntimeError(
+                    f"Encoding failed for all {attempted_count} clip(s) — no valid output produced. "
+                    "On Railway this usually means the container ran out of memory (FFmpeg SIGKILL/-9). "
+                    "Keep FFMPEG_ENCODE_TIER=480p / FFMPEG_LOW_MEMORY=1, or upgrade the service memory."
+                )
+
             # Finalizing
-            self.emit_progress("Finalizing...", 100.0, "Processing complete!")
-            logger.info(f"Pipeline finished! Generated {len(output_files)}/{attempted_count} clips (method: {analysis_method}, tier: {effective_tier})")
+            self.emit_progress(
+                "Finalizing...",
+                100.0,
+                f"Processing complete — {generated}/{attempted_count} clips.",
+            )
+            logger.info(
+                f"Pipeline finished! Generated {generated}/{attempted_count} clips "
+                f"(method: {analysis_method}, tier: {effective_tier})"
+            )
 
             return {
                 "output_files": output_files,
                 "analysis_method": analysis_method,
                 "attempted_clips": attempted_count,
-                "generated_clips": len(output_files),
+                "generated_clips": generated,
                 "video_title": title,
                 "resolution_tier": effective_tier,
                 "raw_clips": refined_clips

@@ -65,7 +65,7 @@ The project supports Railway deployment using the included `Dockerfile` and `rai
 
 Configure your `GEMINI_API_KEY` environment variable and generate a public domain in Railway settings.
 
-On Railway the image sets `FFMPEG_LOW_MEMORY=1` and `FFMPEG_THREADS=2`. Encoding defaults to **1080p** (1440p/4K auto-downgrade). Clips are ffprobe-validated before success.
+On Railway the image sets `FFMPEG_LOW_MEMORY=1`, `FFMPEG_THREADS=1`, and `FFMPEG_ENCODE_TIER=480p` (480×854 letterboxed). Encode fallback ladder: **720 → 540 → 480**. Clips are ffprobe-validated; the job fails if zero clips succeed.
 
 **YouTube preview** works without cookies via oEmbed fallback. **Downloads** on Railway often still need cookies if YouTube bot-checks the datacenter IP. Export Netscape `cookies.txt` from a **throwaway** Google account, then set:
 
