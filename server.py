@@ -93,6 +93,12 @@ app.mount("/clips", StaticFiles(directory=str(CLIPS_DIR)), name="clips")
 app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
 
+@app.get("/health")
+async def health():
+    """Railway / uptime health check."""
+    return {"status": "ok"}
+
+
 @app.get("/api/logos")
 async def list_available_logos():
     """Return available channel brand logos found in assets directory."""
@@ -665,4 +671,6 @@ if __name__ == "__main__":
     import uvicorn
     # Bug 5 fix: Gate reload behind APP_ENV=development flag (defaults to False for production stability)
     dev_mode = os.environ.get("APP_ENV", "production") == "development"
-    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=dev_mode)
+    host = "127.0.0.1" if dev_mode else "0.0.0.0"
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run("server:app", host=host, port=port, reload=dev_mode)
