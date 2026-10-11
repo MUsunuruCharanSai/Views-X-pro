@@ -209,6 +209,23 @@ def get_encode_audio_bitrate() -> str:
     return "96k" if is_low_memory_host() else "192k"
 
 
+def resolve_download_tier(tier: str) -> str:
+    """Source download height — independent of encode canvas.
+
+    On low-memory hosts, still fetch up to 720p (enough for letterbox/crop).
+    Never force 480p download just because encode is 480p.
+    """
+    tier = tier if tier in RESOLUTION_TIERS else DEFAULT_RESOLUTION_TIER
+    if is_low_memory_host():
+        # Cap heavy downloads to save disk/RAM, but keep usable source quality
+        if tier in ("4k", "1440p", "1080p"):
+            return "720p"
+        if tier in ("720p", "540p", "480p"):
+            return tier
+        return "720p"
+    return tier
+
+
 def resolve_encode_tier(tier: str) -> str:
     """Resolve output canvas tier. Low-memory hosts default to 480p (override via FFMPEG_ENCODE_TIER)."""
     override = os.environ.get("FFMPEG_ENCODE_TIER", "").strip().lower()

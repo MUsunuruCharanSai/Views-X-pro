@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Optional
 
 from analyzer import VideoAnalyzer, _detect_content_type, clear_transcript_cache
 from clipper import FFmpegClipper
-from config import DEFAULT_RESOLUTION_TIER, resolve_encode_tier
+from config import DEFAULT_RESOLUTION_TIER, resolve_download_tier, resolve_encode_tier
 from utils import resolve_ffprobe_bin
 from downloader import YouTubeDownloader
 from facecam_calibration import FacecamCalibrator
@@ -76,18 +76,22 @@ class PipelineOrchestrator:
             settings = load_settings()
             effective_api_key = self.api_key or settings.get("gemini_api_key", "")
             requested_tier = resolution_tier or settings.get("resolution_tier", DEFAULT_RESOLUTION_TIER)
+            download_tier = resolve_download_tier(requested_tier)
             effective_tier = resolve_encode_tier(requested_tier)
-            if effective_tier != requested_tier:
-                logger.warning(
-                    f"[Memory Guard] Requested {requested_tier} downgraded to {effective_tier} for this host."
+            if download_tier != requested_tier or effective_tier != requested_tier:
+                logger.info(
+                    f"[Memory Guard] Requested {requested_tier} → download {download_tier}, "
+                    f"encode {effective_tier} (low-memory host keeps encode small to avoid FFmpeg SIGKILL)."
                 )
 
-            # Stage 1: Downloading Video
-            self.emit_progress("Downloading Video", 10.0, f"Fetching video ({effective_tier}) via yt-dlp...")
+            # Stage 1: Downloading Video (source quality ≠ encode canvas)
+            self.emit_progress("Downloading Video", 10.0, f"Fetching video ({download_tier}) via yt-dlp...")
             downloader = YouTubeDownloader(
                 progress_callback=lambda p, msg: self.emit_progress("Downloading Video", p, msg)
             )
-            video_path, audio_path, title, channel_id = downloader.download(youtube_url, resolution_tier=effective_tier)
+            video_path, audio_path, title, channel_id = downloader.download(
+                youtube_url, resolution_tier=download_tier
+            )
 
             if self.is_cancelled:
                 raise InterruptedError("Cancelled by user.")
