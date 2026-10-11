@@ -73,15 +73,26 @@ async def lifespan(app: FastAPI):
     except Exception as ff_err:
         logger.warning(f" FFmpeg                : unavailable ({ff_err})")
     try:
-        from downloader import is_railway_host, materialize_cookies_from_env, youtube_auth_status
+        from downloader import (
+            cookies_configured,
+            cookies_recommended,
+            materialize_cookies_from_env,
+            youtube_auth_status,
+        )
         materialize_cookies_from_env()
         auth = youtube_auth_status()
         logger.info(f" YouTube yt-dlp Auth   : {auth}")
-        if is_railway_host() and "cookies" not in auth:
-            logger.error(
-                " YouTube yt-dlp Auth   : MISSING COOKIES — Railway will fail downloads. "
-                "Set YTDLP_COOKIES_BASE64 (throwaway Google account Netscape cookies.txt)."
+        if cookies_recommended() and not cookies_configured():
+            logger.warning(
+                " YouTube cookies missing on datacenter-like host. Preview can use oEmbed; "
+                "downloads may need YTDLP_COOKIES_BASE64 if YouTube bot-checks this IP."
             )
+        elif os.environ.get("YTDLP_COOKIES_BASE64") or os.environ.get("YTDLP_COOKIES_CONTENT"):
+            if not cookies_configured():
+                logger.error(
+                    " YTDLP_COOKIES_BASE64/CONTENT is set but invalid — downloads/preview "
+                    "will not use cookies until fixed."
+                )
     except Exception as auth_err:
         logger.warning(f" YouTube yt-dlp Auth   : unavailable ({auth_err})")
     logger.info("================================================================")
@@ -245,12 +256,17 @@ class YoutubeCookiesRequest(BaseModel):
 
 @app.get("/api/youtube-cookies/status")
 async def youtube_cookies_status():
-    from downloader import cookies_configured, is_railway_host, youtube_auth_status
+    from downloader import cookies_configured, cookies_recommended, is_railway_host, youtube_auth_status
     return {
         "configured": cookies_configured(),
         "auth": youtube_auth_status(),
         "railway": is_railway_host(),
-        "required_on_railway": True,
+        "cookies_recommended": cookies_recommended(),
+        "hint": (
+            "Set YTDLP_COOKIES_BASE64 if preview/download hits YouTube bot checks."
+            if cookies_recommended() and not cookies_configured()
+            else None
+        ),
     }
 
 

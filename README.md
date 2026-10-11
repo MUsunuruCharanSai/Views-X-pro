@@ -65,15 +65,15 @@ The project supports Railway deployment using the included `Dockerfile` and `rai
 
 Configure your `GEMINI_API_KEY` environment variable and generate a public domain in Railway settings.
 
-On Railway the image sets `FFMPEG_LOW_MEMORY=1`, `FFMPEG_THREADS=2`, and `YTDLP_REQUIRE_COOKIES=1`. Encoding defaults to **1080p** (1440p/4K auto-downgrade). Clips are ffprobe-validated before success.
+On Railway the image sets `FFMPEG_LOW_MEMORY=1` and `FFMPEG_THREADS=2`. Encoding defaults to **1080p** (1440p/4K auto-downgrade). Clips are ffprobe-validated before success.
 
-**YouTube on Railway (required):** datacenter IPs get “confirm you’re not a bot”. Export Netscape `cookies.txt` from a **throwaway** Google account, then set Railway variable:
+**YouTube preview** works without cookies via oEmbed fallback. **Downloads** on Railway often still need cookies if YouTube bot-checks the datacenter IP. Export Netscape `cookies.txt` from a **throwaway** Google account, then set:
 
 ```powershell
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("cookies.txt"))
 ```
 
-→ paste into `YTDLP_COOKIES_BASE64` → redeploy. Never use your main Google account.
+→ Railway variable `YTDLP_COOKIES_BASE64` → redeploy. Never use your main Google account.
 
 **Note:** Temporary files may be lost on redeploy unless you attach a persistent volume. Prefer ≥2 GB RAM.
 
