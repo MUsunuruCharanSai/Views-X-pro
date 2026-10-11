@@ -73,8 +73,15 @@ async def lifespan(app: FastAPI):
     except Exception as ff_err:
         logger.warning(f" FFmpeg                : unavailable ({ff_err})")
     try:
-        from downloader import youtube_auth_status
-        logger.info(f" YouTube yt-dlp Auth   : {youtube_auth_status()}")
+        from downloader import is_railway_host, materialize_cookies_from_env, youtube_auth_status
+        materialize_cookies_from_env()
+        auth = youtube_auth_status()
+        logger.info(f" YouTube yt-dlp Auth   : {auth}")
+        if is_railway_host() and "cookies" not in auth:
+            logger.error(
+                " YouTube yt-dlp Auth   : MISSING COOKIES — Railway will fail downloads. "
+                "Set YTDLP_COOKIES_BASE64 (throwaway Google account Netscape cookies.txt)."
+            )
     except Exception as auth_err:
         logger.warning(f" YouTube yt-dlp Auth   : unavailable ({auth_err})")
     logger.info("================================================================")
@@ -224,6 +231,38 @@ async def update_user_settings(req: SettingsRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save settings: {e}")
+
+
+class YoutubeCookiesRequest(BaseModel):
+    cookies: str  # Netscape cookies.txt contents
+
+
+@app.get("/api/youtube-cookies/status")
+async def youtube_cookies_status():
+    from downloader import cookies_configured, is_railway_host, youtube_auth_status
+    return {
+        "configured": cookies_configured(),
+        "auth": youtube_auth_status(),
+        "railway": is_railway_host(),
+        "required_on_railway": True,
+    }
+
+
+@app.post("/api/youtube-cookies")
+async def upload_youtube_cookies(req: YoutubeCookiesRequest):
+    """Upload Netscape cookies.txt body for yt-dlp (throwaway Google account only)."""
+    from downloader import save_cookies_text
+    try:
+        path = save_cookies_text(req.cookies)
+        return {
+            "status": "success",
+            "message": f"YouTube cookies saved to {path.name}. Use a throwaway account only.",
+            "path": path.name,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save cookies: {e}")
 
 
 # ============================================================================

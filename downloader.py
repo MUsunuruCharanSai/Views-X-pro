@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import shutil
@@ -9,6 +10,9 @@ import yt_dlp
 
 from config import BASE_DIR, DEFAULT_RESOLUTION_TIER, DOWNLOADS_DIR, RESOLUTION_TIERS, TEMP_DIR
 from utils import ensure_ffmpeg_on_path, logger, resolve_ffmpeg_bin
+
+# Materialized cookies path for Railway env injection
+_RUNTIME_COOKIES_PATH = TEMP_DIR / "youtube_cookies.txt"
 
 
 def normalize_youtube_url(url: str) -> str:
@@ -31,8 +35,74 @@ def _js_runtime_opts() -> Dict[str, Any]:
     return {"remote_components": ["ejs:github"]}
 
 
+def is_railway_host() -> bool:
+    return bool(
+        os.environ.get("RAILWAY_ENVIRONMENT")
+        or os.environ.get("RAILWAY_PROJECT_ID")
+        or os.environ.get("YTDLP_REQUIRE_COOKIES", "").strip().lower() in ("1", "true", "yes")
+    )
+
+
+def _looks_like_netscape_cookies(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    if "# Netscape HTTP Cookie File" in t or "# HTTP Cookie File" in t:
+        return True
+    # Tab-separated cookie lines are also accepted by yt-dlp
+    return any("\t" in line and "youtube" in line.lower() for line in t.splitlines() if line and not line.startswith("#"))
+
+
+def materialize_cookies_from_env() -> Optional[Path]:
+    """Write cookies from Railway env vars to a local Netscape file.
+
+    Supports:
+      - YTDLP_COOKIES_BASE64  (base64 of cookies.txt)
+      - YTDLP_COOKIES_CONTENT (raw Netscape cookies.txt body)
+    """
+    b64 = os.environ.get("YTDLP_COOKIES_BASE64", "").strip()
+    raw = os.environ.get("YTDLP_COOKIES_CONTENT", "").strip()
+    content = ""
+    if b64:
+        try:
+            content = base64.b64decode(b64).decode("utf-8", errors="replace")
+        except Exception as e:
+            logger.error(f"YTDLP_COOKIES_BASE64 decode failed: {e}")
+            return None
+    elif raw:
+        # Allow \n escaped newlines from some secret UIs
+        content = raw.replace("\\n", "\n")
+
+    if not content or not _looks_like_netscape_cookies(content):
+        return None
+
+    try:
+        _RUNTIME_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _RUNTIME_COOKIES_PATH.write_text(content, encoding="utf-8")
+        logger.info(f"yt-dlp auth: materialized cookies from env → {_RUNTIME_COOKIES_PATH.name}")
+        return _RUNTIME_COOKIES_PATH
+    except OSError as e:
+        logger.error(f"Could not write runtime cookies file: {e}")
+        return None
+
+
+def save_cookies_text(content: str) -> Path:
+    """Persist uploaded Netscape cookies for local/Railway volume use."""
+    if not _looks_like_netscape_cookies(content):
+        raise ValueError(
+            "Invalid cookies format. Export a Netscape cookies.txt "
+            "(e.g. 'Get cookies.txt LOCALLY' browser extension) while signed into YouTube."
+        )
+    dest = BASE_DIR / "cookies.txt"
+    dest.write_text(content.replace("\\n", "\n"), encoding="utf-8")
+    # Keep runtime copy in sync
+    _RUNTIME_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _RUNTIME_COOKIES_PATH.write_text(dest.read_text(encoding="utf-8"), encoding="utf-8")
+    return dest
+
+
 def resolve_cookie_opts() -> Dict[str, Any]:
-    """Resolve cookie auth at call-time (env + auto cookies.txt)."""
+    """Resolve cookie auth at call-time (file / env / browser)."""
     opts: Dict[str, Any] = {}
     cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     cookies_browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
@@ -42,6 +112,7 @@ def resolve_cookie_opts() -> Dict[str, Any]:
         p = Path(cookies_file)
         candidates.append(p if p.is_absolute() else BASE_DIR / p)
     candidates.append(BASE_DIR / "cookies.txt")
+    candidates.append(_RUNTIME_COOKIES_PATH)
 
     for cookie_path in candidates:
         if cookie_path.is_file() and cookie_path.stat().st_size > 0:
@@ -49,7 +120,14 @@ def resolve_cookie_opts() -> Dict[str, Any]:
             logger.info(f"yt-dlp auth: cookies file → {cookie_path.name}")
             return opts
 
-    if cookies_browser:
+    # Railway-friendly: inject from env secret if no file present
+    materialized = materialize_cookies_from_env()
+    if materialized and materialized.is_file():
+        opts["cookiefile"] = str(materialized.resolve())
+        return opts
+
+    # Browser cookies only work locally (not on Railway containers)
+    if cookies_browser and not is_railway_host():
         parts = tuple(p for p in cookies_browser.split(":") if p)
         opts["cookiesfrombrowser"] = parts or (cookies_browser,)
         logger.info(f"yt-dlp auth: cookies from browser → {cookies_browser}")
@@ -65,7 +143,12 @@ def youtube_auth_status() -> str:
     if "cookiesfrombrowser" in opts:
         return f"browser ({':'.join(opts['cookiesfrombrowser'])})"
     node = "node" if shutil.which("node") else "no-node"
-    return f"default clients + ejs ({node})"
+    host = "railway/no-cookies" if is_railway_host() else f"default+ejs ({node})"
+    return host
+
+
+def cookies_configured() -> bool:
+    return bool(resolve_cookie_opts())
 
 
 def build_ydl_base_opts(
@@ -142,11 +225,27 @@ def extract_youtube_info(url: str) -> Dict[str, Any]:
     """Shared metadata extraction with the same strategy as downloads."""
     url = normalize_youtube_url(url)
     cookie_opts = resolve_cookie_opts()
-    attempts: List[Tuple[str, Optional[List[str]], bool]] = [
-        ("default", None, False),
-        ("android_vr", ["android_vr"], False),
-        ("default+web_embedded+cookies", ["default", "web_embedded"], True),
-    ]
+    if is_railway_host() and not cookie_opts:
+        raise RuntimeError(
+            "Railway/datacenter IP requires YouTube cookies. "
+            "Set Railway variable YTDLP_COOKIES_BASE64 (base64 of cookies.txt from a throwaway Google account), "
+            "or POST Netscape cookies to /api/youtube-cookies."
+        )
+    attempts: List[Tuple[str, Optional[List[str]], bool]] = []
+    if cookie_opts:
+        attempts.extend(
+            [
+                ("cookies+default+web_embedded", ["default", "web_embedded"], True),
+                ("cookies+mweb", ["mweb"], True),
+            ]
+        )
+    if not is_railway_host() or not cookie_opts:
+        attempts.extend(
+            [
+                ("default", None, False),
+                ("android_vr", ["android_vr"], False),
+            ]
+        )
     last_err: Optional[Exception] = None
     for label, clients, use_cookies in attempts:
         if use_cookies and not cookie_opts:
@@ -261,14 +360,44 @@ class YouTubeDownloader:
         )
 
         cookie_opts = resolve_cookie_opts()
-        # (label, clients, want_cookies, format_str)
-        attempts: List[Tuple[str, Optional[List[str]], bool, str]] = [
-            ("default+hls", None, False, hls_merge_format),
-            ("default+progressive", None, False, progressive_format),
-            ("android_vr+progressive", ["android_vr"], False, progressive_format),
-            ("default+web_embedded+cookies", ["default", "web_embedded"], True, hls_merge_format),
-            ("mweb+cookies", ["mweb"], True, hls_merge_format),
-        ]
+        if is_railway_host() and not cookie_opts:
+            raise RuntimeError(
+                "Railway blocks anonymous YouTube downloads (datacenter IP bot check). "
+                "Add cookies from a throwaway Google account:\n"
+                "1) On your PC, export Netscape cookies.txt while signed into YouTube "
+                "(extension: 'Get cookies.txt LOCALLY').\n"
+                "2) In Railway Variables set YTDLP_COOKIES_BASE64 to: "
+                "base64.b64encode(open('cookies.txt','rb').read()).decode()\n"
+                "   PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes('cookies.txt'))\n"
+                "3) Redeploy. Do NOT use your main Google account."
+            )
+
+        # Cookie-backed clients first on Railway; anonymous clients first locally.
+        attempts: List[Tuple[str, Optional[List[str]], bool, str]] = []
+        if cookie_opts:
+            attempts.extend(
+                [
+                    ("cookies+default+hls", ["default", "web_embedded"], True, hls_merge_format),
+                    ("cookies+mweb+hls", ["mweb"], True, hls_merge_format),
+                    ("cookies+default+progressive", ["default", "web_embedded"], True, progressive_format),
+                ]
+            )
+        if not is_railway_host():
+            attempts.extend(
+                [
+                    ("default+hls", None, False, hls_merge_format),
+                    ("default+progressive", None, False, progressive_format),
+                    ("android_vr+progressive", ["android_vr"], False, progressive_format),
+                ]
+            )
+        elif cookie_opts:
+            # Last-resort anonymous tries even on Railway (rarely works)
+            attempts.extend(
+                [
+                    ("default+hls", None, False, hls_merge_format),
+                    ("android_vr+progressive", ["android_vr"], False, progressive_format),
+                ]
+            )
 
         errors: List[str] = []
         video_path: Optional[Path] = None
@@ -291,6 +420,9 @@ class YouTubeDownloader:
                 )
                 # Prefer HLS over https progressive (avoids GVS PO-token 403 on audio)
                 opts["format_sort"] = ["res", "proto:m3u8"]
+                # Fewer parallel fragments on Railway to reduce bot-score / RAM spikes
+                if is_railway_host():
+                    opts["concurrent_fragment_downloads"] = 2
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                     title = info.get("title", "YouTube Video")
@@ -320,11 +452,14 @@ class YouTubeDownloader:
         else:
             auth = youtube_auth_status()
             detail = " | ".join(errors[-3:]) if errors else "unknown"
+            cookie_hint = (
+                " Set Railway var YTDLP_COOKIES_BASE64 from a throwaway account cookies.txt."
+                if is_railway_host() or "not a bot" in detail.lower()
+                else ""
+            )
             raise RuntimeError(
                 f"All YouTube download strategies failed (auth={auth}). "
-                f"Recent errors: {detail}. "
-                "Ensure FFmpeg is installed. On Railway/datacenter IPs, add cookies.txt "
-                "(throwaway Google account) via YTDLP_COOKIES_FILE."
+                f"Recent errors: {detail}.{cookie_hint}"
             )
 
         from utils import get_video_dimensions
