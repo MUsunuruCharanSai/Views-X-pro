@@ -264,8 +264,9 @@ def build_ydl_base_opts(
                 "concurrent_fragment_downloads": 4,
                 "http_chunk_size": 10485760,
                 "buffersize": 2097152,
-                "writeautosub": True,
-                "subtitleslangs": ["en", "en-US", "en-GB", "a.en"],
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                "subtitleslangs": ["en", "en-US", "en-GB", "a.en", "hi", "hi-IN"],
                 "subtitlesformat": "vtt",
             }
         )

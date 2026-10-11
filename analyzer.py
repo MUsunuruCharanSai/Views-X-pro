@@ -784,6 +784,38 @@ class VideoAnalyzer:
         )
         return ctx
 
+    def _download_subs_via_ytdlp(self, youtube_url: str, video_id: str) -> List[Dict[str, Any]]:
+        """Last-resort: pull captions only (no video) via yt-dlp into TEMP_DIR."""
+        try:
+            import yt_dlp
+            from downloader import build_ydl_base_opts, normalize_youtube_url
+
+            url = normalize_youtube_url(youtube_url)
+            outtmpl = str(TEMP_DIR / f"{video_id}.%(ext)s")
+            opts = build_ydl_base_opts(skip_download=True, with_cookies=True)
+            opts.update(
+                {
+                    "skip_download": True,
+                    "writesubtitles": True,
+                    "writeautomaticsub": True,
+                    "subtitleslangs": ["en", "en-US", "en-GB", "a.en", "hi", "hi-IN"],
+                    "subtitlesformat": "vtt",
+                    "outtmpl": {"default": outtmpl, "subtitle": str(TEMP_DIR / f"{video_id}.%(ext)s")},
+                }
+            )
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            logger.warning(f"yt-dlp subtitle-only download failed for {video_id}: {e}")
+            return []
+
+        for vtt in sorted(TEMP_DIR.glob(f"{video_id}*.vtt")):
+            snippets = parse_vtt_subtitle(vtt)
+            if snippets:
+                logger.info(f"Transcript recovered via yt-dlp VTT ({vtt.name}, {len(snippets)} entries)")
+                return snippets
+        return []
+
     def fetch_transcript(self, youtube_url: str) -> List[Dict[str, Any]]:
         """Fetch transcript with timestamps from YouTube Video URL with language fallbacks and yt-dlp VTT backup."""
         video_id = extract_youtube_id(youtube_url)
@@ -797,11 +829,11 @@ class VideoAnalyzer:
 
         logger.info(f"Fetching transcript for YouTube ID: {video_id}")
 
-        # Attempt 1: youtube-transcript-api v0.6.3+ fetch() method with language priority
+        # Attempt 1: youtube-transcript-api — English first, then any available track
         try:
             api = YouTubeTranscriptApi()
-            languages = ["en", "en-US", "en-GB", "a.en", "en-CA", "en-AU"]
-            
+            languages = ["en", "en-US", "en-GB", "a.en", "en-CA", "en-AU", "hi", "hi-IN"]
+
             try:
                 raw_transcript = api.fetch(video_id, languages=languages)
                 snippets = [_normalize_snippet(item) for item in raw_transcript]
@@ -813,29 +845,47 @@ class VideoAnalyzer:
                 logger.debug(f"Direct fetch() with languages failed ({e}). Trying fallback list()...")
 
             transcript_list = api.list(video_id)
-            for tr in transcript_list:
+            # Prefer manually created, then generated; accept any language (AI can still score timing/text)
+            ordered = sorted(
+                list(transcript_list),
+                key=lambda tr: (getattr(tr, "is_generated", True), getattr(tr, "language_code", "zz")),
+            )
+            for tr in ordered:
                 try:
                     raw = tr.fetch()
                     snippets = [_normalize_snippet(item) for item in raw]
                     if snippets:
-                        logger.info(f"Successfully fetched transcript via YouTubeTranscriptApi().list() ({len(snippets)} entries)")
+                        lang = getattr(tr, "language_code", "?")
+                        logger.info(
+                            f"Successfully fetched transcript via YouTubeTranscriptApi().list() "
+                            f"lang={lang} ({len(snippets)} entries)"
+                        )
                         _TRANSCRIPT_CACHE[video_id] = snippets
                         return snippets
                 except Exception as list_fetch_err:
-                    # Bug 12 fix: Log swallowed list transcript fetch exception at debug level
                     logger.debug(f"Transcript list entry fetch failed: {list_fetch_err}")
         except Exception as e:
-            logger.debug(f"YouTubeTranscriptApi path failed ({e}). Checking local yt-dlp VTT subtitles...")
+            logger.warning(f"YouTubeTranscriptApi path failed ({e}). Checking local / yt-dlp VTT subtitles...")
 
-        # Attempt 2: Local yt-dlp extracted VTT subtitle files in temp/
+        # Attempt 2: Local yt-dlp VTT files already written during video download
         vtt_candidates = list(TEMP_DIR.glob(f"{video_id}*.vtt"))
         for vtt in vtt_candidates:
             snippets = parse_vtt_subtitle(vtt)
             if snippets:
+                logger.info(f"Using local VTT transcript {vtt.name} ({len(snippets)} entries)")
                 _TRANSCRIPT_CACHE[video_id] = snippets
                 return snippets
 
-        logger.warning(f"All transcript fetching attempts failed for YouTube ID: {video_id}")
+        # Attempt 3: Dedicated subtitle-only yt-dlp pull (helps when transcript API is blocked)
+        snippets = self._download_subs_via_ytdlp(youtube_url, video_id)
+        if snippets:
+            _TRANSCRIPT_CACHE[video_id] = snippets
+            return snippets
+
+        logger.warning(
+            f"All transcript fetching attempts failed for YouTube ID: {video_id}. "
+            "AI clip selection requires captions; pipeline will use evenly spaced fallbacks."
+        )
         return []
 
     def analyze_viral_clips(

@@ -887,11 +887,11 @@ document.addEventListener("DOMContentLoaded", () => {
         const method = analysisMethod || "";
         if (method.includes("uniform_fallback")) {
             analysisBanner.classList.add("banner-warning");
-            analysisBanner.innerHTML = `<span class="banner-icon">⚠️</span><span>No captions available — clips are evenly spaced. Add an API key in Settings for AI selection.</span>`;
+            analysisBanner.innerHTML = `<span class="banner-icon">⚠️</span><span>No captions/transcript found for this video — clips are <strong>evenly spaced</strong>. AI selection needs YouTube captions (or auto-captions). Your Gemini API key is only used <em>after</em> captions load.</span>`;
             analysisBanner.classList.remove("hidden");
         } else if (method.includes("heuristic_transcript")) {
             analysisBanner.classList.add("banner-warning");
-            analysisBanner.innerHTML = `<span class="banner-icon">ℹ️</span><span>Clips selected via <strong>heuristic analysis</strong> (no AI key active). <a href="#" id="banner-settings-link" style="color:var(--cyan); text-decoration:underline;">Add your Gemini API key in Settings</a> for smarter AI-powered selection.</span>`;
+            analysisBanner.innerHTML = `<span class="banner-icon">ℹ️</span><span>Captions found, but clips used <strong>heuristic analysis</strong> (no Gemini key active). <a href="#" id="banner-settings-link" style="color:var(--cyan); text-decoration:underline;">Add your Gemini API key in Settings</a> for AI-powered selection.</span>`;
             analysisBanner.classList.remove("hidden");
             document.getElementById("banner-settings-link")?.addEventListener("click", e => {
                 e.preventDefault();
