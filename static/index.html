@@ -252,7 +252,7 @@
                             <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;">
                                 <button type="button" id="yt-cookies-save-btn" class="btn btn-secondary btn-sm">🍪 Save YouTube Cookies</button>
                             </div>
-                            <small>Export while logged into <strong>youtube.com</strong> (not just google.com) with a <strong>throwaway</strong> account — file must include SAPISID / PSID cookies. For persistence across redeploys, also set Railway variable <code>YTDLP_COOKIES_BASE64</code>.</small>
+                            <small>Best: export cookies <strong>only from youtube.com</strong> while logged in with a <strong>throwaway</strong> account (SAPISID / __Secure-1PSID required). Full browser dumps are auto-filtered, but do <strong>not</strong> paste them into chat. For redeploy persistence set <code>YTDLP_COOKIES_BASE64</code>.</small>
                         </div>
 
                         <div class="form-group">
@@ -435,6 +435,6 @@
     </main>
 </div>
 
-<script src="/static/app.js?v=10.5"></script>
+<script src="/static/app.js?v=10.6"></script>
 </body>
 </html>

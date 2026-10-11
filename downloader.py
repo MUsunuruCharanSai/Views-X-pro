@@ -86,11 +86,53 @@ _YT_LOGIN_COOKIE_NAMES = (
 )
 
 
+def _cookie_domain_allowed(domain: str) -> bool:
+    """Keep only YouTube / Google auth domains (drop mail/ads/github/etc.)."""
+    d = (domain or "").lower().lstrip(".")
+    if d == "youtube.com" or d.endswith(".youtube.com"):
+        return True
+    if d == "google.com" or d.endswith(".google.com"):
+        # Skip Gmail/Drive/Meet paths — only root google.com auth cookies matter
+        return True
+    if d == "google.co.in" or d.endswith(".google.co.in"):
+        return True
+    return False
+
+
+def filter_youtube_cookies(text: str) -> str:
+    """Strip a full-browser cookie dump down to YouTube/Google login cookies."""
+    keep: List[str] = [
+        "# Netscape HTTP Cookie File",
+        "# Filtered for YouTube yt-dlp auth only — do not paste full browser dumps.",
+        "",
+    ]
+    for line in (text or "").replace("\\n", "\n").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        parts = raw.split("\t")
+        if len(parts) < 7:
+            continue
+        if _cookie_domain_allowed(parts[0]):
+            # Skip obvious non-auth trackers on google.com paths
+            path = parts[2] if len(parts) > 2 else "/"
+            name = parts[5]
+            if name.startswith("__utm") or name in ("_ga", "_gid", "NID") and "youtube" not in parts[0].lower():
+                # Keep NID on google.com — sometimes used; drop pure analytics
+                if name in ("_ga", "_gid") or name.startswith("__utm"):
+                    continue
+            if path.startswith("/gmail") or path.startswith("/mail") or "meet.google" in parts[0]:
+                continue
+            keep.append(raw)
+    return "\n".join(keep) + "\n"
+
+
 def inspect_youtube_cookies(text: str) -> Dict[str, Any]:
     """Check Netscape cookie body for YouTube/Google login markers."""
+    filtered = filter_youtube_cookies(text)
     names: set = set()
     domains: set = set()
-    for line in (text or "").splitlines():
+    for line in filtered.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -101,7 +143,9 @@ def inspect_youtube_cookies(text: str) -> Dict[str, Any]:
         names.add(name)
         domains.add(domain.lstrip("."))
     has_yt = any("youtube.com" in d for d in domains)
-    has_google = any(d == "google.com" or d.endswith(".google.com") for d in domains)
+    has_google = any(
+        d == "google.com" or d.endswith(".google.com") or "google.co." in d for d in domains
+    )
     login_hits = [n for n in _YT_LOGIN_COOKIE_NAMES if n in names]
     ok = has_yt and len(login_hits) >= 2
     return {
@@ -110,6 +154,7 @@ def inspect_youtube_cookies(text: str) -> Dict[str, Any]:
         "has_google_domain": has_google,
         "login_cookies": login_hits,
         "cookie_count": len(names),
+        "filtered_lines": max(0, len(filtered.splitlines()) - 3),
     }
 
 
@@ -169,6 +214,7 @@ def materialize_cookies_from_env() -> Optional[Path]:
         )
         return None
 
+    content = filter_youtube_cookies(content)
     try:
         _RUNTIME_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
         _RUNTIME_COOKIES_PATH.write_text(content, encoding="utf-8")
@@ -180,29 +226,34 @@ def materialize_cookies_from_env() -> Optional[Path]:
 
 
 def save_cookies_text(content: str) -> Path:
-    """Persist uploaded Netscape cookies for local/Railway volume use."""
+    """Persist uploaded Netscape cookies for local/Railway volume use.
+
+    Full-browser dumps are accepted but filtered to YouTube/Google auth cookies only.
+    """
     content = content.replace("\\n", "\n")
     if not _looks_like_netscape_cookies(content):
         raise ValueError(
             "Invalid cookies format. Export a Netscape cookies.txt "
             "(e.g. 'Get cookies.txt LOCALLY' browser extension) while signed into YouTube."
         )
-    inspection = inspect_youtube_cookies(content)
+    filtered = filter_youtube_cookies(content)
+    inspection = inspect_youtube_cookies(filtered)
     if not inspection["ok"]:
         raise ValueError(
             "Cookies file is missing YouTube login markers "
             f"(found login cookies: {inspection['login_cookies'] or 'none'}; "
             f"youtube.com domain: {inspection['has_youtube_domain']}). "
-            "Export again from youtube.com while logged in — include .youtube.com and .google.com cookies."
+            "Export again from youtube.com while logged in — include .youtube.com SAPISID/PSID cookies. "
+            "Prefer a throwaway Google account (never paste your full browser cookie dump into chat)."
         )
     dest = BASE_DIR / "cookies.txt"
-    dest.write_text(content, encoding="utf-8")
+    dest.write_text(filtered, encoding="utf-8")
     # Keep runtime copy in sync
     _RUNTIME_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _RUNTIME_COOKIES_PATH.write_text(dest.read_text(encoding="utf-8"), encoding="utf-8")
+    _RUNTIME_COOKIES_PATH.write_text(filtered, encoding="utf-8")
     logger.info(
-        f"yt-dlp auth: saved cookies.txt ({inspection['cookie_count']} names, "
-        f"login={inspection['login_cookies']})"
+        f"yt-dlp auth: saved filtered cookies.txt ({inspection['cookie_count']} names, "
+        f"login={inspection['login_cookies']}, lines={inspection.get('filtered_lines')})"
     )
     return dest
 
