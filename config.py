@@ -4,6 +4,12 @@ import os
 from pathlib import Path
 from typing import Optional
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # Base directories
 BASE_DIR = Path(__file__).resolve().parent
 DOWNLOADS_DIR = BASE_DIR / "downloads"
@@ -152,6 +158,12 @@ SCORING_WEIGHTS = {
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"  # Primary flagship model (high viral reasoning + 1M context)
 FALLBACK_GEMINI_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]  # Ultra-fast secondary fallbacks
+
+# yt-dlp YouTube auth (needed when anonymous downloads are blocked)
+# Local: YTDLP_COOKIES_FROM_BROWSER=chrome  (or edge / firefox). Close the browser if cookie lock fails.
+# Server/Railway: export Netscape cookies.txt and set YTDLP_COOKIES_FILE=cookies.txt
+YTDLP_COOKIES_FROM_BROWSER = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
 
 # Log config
 LOG_FILE_PATH = LOGS_DIR / "app.log"

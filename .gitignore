@@ -14,6 +14,9 @@ ENV/
 user_settings.json
 job_history.json
 facecam_presets.json
+cookies.txt
+**/cookies.txt
+
 
 # Brand Logos (only default assets are tracked in Git; all custom user logos stay local)
 assets/*

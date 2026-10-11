@@ -41,11 +41,16 @@ pip install -r requirements.txt
 
 ### Configure Environment Variables
 
-Create a `.env` file and add your Gemini API key:
+Create a `.env` file:
 
 ```env
 GEMINI_API_KEY=your_api_key_here
+APP_ENV=production
+# If YouTube blocks downloads, use signed-in browser cookies:
+YTDLP_COOKIES_FROM_BROWSER=chrome
 ```
+
+Close Chrome first if cookie access fails. On Railway, export a Netscape `cookies.txt` and set `YTDLP_COOKIES_FILE` instead (never commit that file).
 
 ### Run the Application
 
