@@ -1,10 +1,38 @@
 import time
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 import yt_dlp
 
-from config import DEFAULT_RESOLUTION_TIER, DOWNLOADS_DIR, RESOLUTION_TIERS, TEMP_DIR
+from config import (
+    BASE_DIR,
+    DEFAULT_RESOLUTION_TIER,
+    DOWNLOADS_DIR,
+    RESOLUTION_TIERS,
+    TEMP_DIR,
+    YTDLP_COOKIES_FILE,
+    YTDLP_COOKIES_FROM_BROWSER,
+)
 from utils import logger
+
+
+def ytdlp_cookie_opts() -> Dict[str, Any]:
+    """Build yt-dlp cookie options from env (browser cookies locally, cookies.txt on servers)."""
+    opts: Dict[str, Any] = {}
+    if YTDLP_COOKIES_FILE:
+        cookie_path = Path(YTDLP_COOKIES_FILE)
+        if not cookie_path.is_absolute():
+            cookie_path = BASE_DIR / cookie_path
+        if cookie_path.is_file():
+            opts["cookiefile"] = str(cookie_path)
+            logger.info(f"yt-dlp auth: using cookies file ({cookie_path.name})")
+        else:
+            logger.warning(f"YTDLP_COOKIES_FILE set but file not found: {cookie_path}")
+    elif YTDLP_COOKIES_FROM_BROWSER:
+        # Supports "chrome", "edge", "firefox", or "chrome:Profile Name"
+        parts = tuple(p for p in YTDLP_COOKIES_FROM_BROWSER.split(":") if p)
+        opts["cookiesfrombrowser"] = parts or (YTDLP_COOKIES_FROM_BROWSER,)
+        logger.info(f"yt-dlp auth: using cookies from browser ({YTDLP_COOKIES_FROM_BROWSER})")
+    return opts
 
 
 class YouTubeDownloader:
@@ -67,7 +95,8 @@ class YouTubeDownloader:
                     if self.progress_callback:
                         self.progress_callback(100.0, f"Using existing video: {cand.name}")
                     try:
-                        with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+                        meta_opts = {"quiet": True, "skip_download": True, **ytdlp_cookie_opts()}
+                        with yt_dlp.YoutubeDL(meta_opts) as ydl:
                             info = ydl.extract_info(url, download=False)
                             title = info.get("title", cand.stem)
                             channel_id = info.get("channel_id") or info.get("uploader_id", "")
@@ -128,6 +157,7 @@ class YouTubeDownloader:
                 "Accept-Language": "en-us,en;q=0.5",
             }
         }
+        ydl_opts.update(ytdlp_cookie_opts())
 
         # Bug 7 fix: If max_duration_sec provided, restrict download range to first N seconds
         if max_duration_sec and max_duration_sec > 0:
@@ -179,6 +209,7 @@ class YouTubeDownloader:
                             }
                         }
                     }
+                    fallback_opts.update(ytdlp_cookie_opts())
                     with yt_dlp.YoutubeDL(fallback_opts) as ydl:
                         info = ydl.extract_info(url, download=True)
                         video_id = info.get("id", "video")
@@ -201,7 +232,12 @@ class YouTubeDownloader:
                     logger.warning(f"Fallback player client {client} failed: {client_err}")
 
             if not download_success:
-                raise RuntimeError("All download tiers and player clients failed.")
+                raise RuntimeError(
+                    "All download tiers and player clients failed. "
+                    "YouTube may require login — set YTDLP_COOKIES_FROM_BROWSER=chrome "
+                    "(local; close Chrome if cookie access fails) or YTDLP_COOKIES_FILE=cookies.txt "
+                    "(Railway/servers)."
+                )
 
         # Probe actual resolution and log status
         from utils import get_video_dimensions

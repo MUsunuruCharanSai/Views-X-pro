@@ -168,12 +168,14 @@ async def get_video_preview_info(req: PreviewRequest):
 
     def fetch_meta():
         import yt_dlp
+        from downloader import ytdlp_cookie_opts
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
             "nocheckcertificate": True,
             "socket_timeout": 15,
+            **ytdlp_cookie_opts(),
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(req.url, download=False)
@@ -379,8 +381,14 @@ async def manual_calibrate(req: CalibrateRequest):
 
         def run_calibration():
             import yt_dlp
+            from downloader import ytdlp_cookie_opts
             # Fetch channel_id
-            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, "socket_timeout": 15}) as ydl:
+            with yt_dlp.YoutubeDL({
+                "quiet": True,
+                "skip_download": True,
+                "socket_timeout": 15,
+                **ytdlp_cookie_opts(),
+            }) as ydl:
                 info = ydl.extract_info(req.youtube_url, download=False)
                 channel_id = info.get("channel_id") or info.get("uploader_id", "")
                 video_title = info.get("title", "")

@@ -7,6 +7,7 @@ __pycache__
 *.py[cod]
 .pytest_cache
 .env
+cookies.txt
 user_settings.json
 job_history.json
 facecam_presets.json
