@@ -14,6 +14,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const systemStatus    = document.getElementById("system-status");
     const apiKeyWarning   = document.getElementById("api-key-warning");
     const apiKeyWarningLink = document.getElementById("api-key-warning-link");
+    const cookiesWarning  = document.getElementById("cookies-warning");
+    const cookiesWarningLink = document.getElementById("cookies-warning-link");
+    const ytCookiesInput  = document.getElementById("yt-cookies-input");
+    const ytCookiesStatus = document.getElementById("yt-cookies-status");
+    const ytCookiesSaveBtn = document.getElementById("yt-cookies-save-btn");
 
     const videoPreviewCard = document.getElementById("video-preview-card");
     const previewThumb     = document.getElementById("preview-thumb");
@@ -273,6 +278,69 @@ document.addEventListener("DOMContentLoaded", () => {
         settingsDetails.scrollIntoView({ behavior: "smooth", block: "start" });
     });
 
+    async function refreshCookiesStatus() {
+        if (!ytCookiesStatus && !cookiesWarning) return;
+        try {
+            const res = await fetch("/api/youtube-cookies/status");
+            if (!res.ok) return;
+            const data = await res.json();
+            const auth = data.auth || "unknown";
+            if (ytCookiesStatus) {
+                ytCookiesStatus.textContent = data.configured
+                    ? `Status: configured (${auth})`
+                    : `Status: not configured (${auth})`;
+            }
+            if (cookiesWarning) {
+                if (data.cookies_recommended && !data.configured) {
+                    cookiesWarning.classList.add("visible");
+                } else {
+                    cookiesWarning.classList.remove("visible");
+                }
+            }
+        } catch (err) {
+            console.warn("Cookies status failed:", err);
+        }
+    }
+
+    cookiesWarningLink?.addEventListener("click", (e) => {
+        e.preventDefault();
+        settingsDetails.open = true;
+        ytCookiesInput?.focus();
+        settingsDetails.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+
+    ytCookiesSaveBtn?.addEventListener("click", async () => {
+        const text = (ytCookiesInput?.value || "").trim();
+        if (!text) {
+            toast("Paste Netscape cookies.txt contents first.", "error");
+            return;
+        }
+        ytCookiesSaveBtn.disabled = true;
+        try {
+            const looksB64 = /^[A-Za-z0-9+/=\s]+$/.test(text)
+                && !text.includes("\t")
+                && text.length > 80
+                && !text.includes("# Netscape");
+            const payload = looksB64
+                ? { cookies_base64: text.replace(/\s+/g, "") }
+                : { cookies: text };
+            const res = await fetch("/api/youtube-cookies", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.detail || "Failed to save cookies");
+            toast(data.message || "YouTube cookies saved.", "success", 7000);
+            if (ytCookiesInput) ytCookiesInput.value = "";
+            await refreshCookiesStatus();
+        } catch (err) {
+            toast(`Cookies error: ${err.message}`, "error", 8000);
+        } finally {
+            ytCookiesSaveBtn.disabled = false;
+        }
+    });
+
     // ── Resolution Tier Radio Selector ────────────────────────
     document.querySelectorAll(".tier-option").forEach(label => {
         label.addEventListener("click", () => {
@@ -402,6 +470,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // ── Initial Data Load ─────────────────────────────────────
     fetchSettings();
+    refreshCookiesStatus();
     fetchStorageStats();
     fetchJobHistory();
     fetchAvailableLogos();

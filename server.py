@@ -252,20 +252,23 @@ async def update_user_settings(req: SettingsRequest):
 
 
 class YoutubeCookiesRequest(BaseModel):
-    cookies: str  # Netscape cookies.txt contents
+    cookies: Optional[str] = None  # Netscape cookies.txt contents
+    cookies_base64: Optional[str] = None  # base64 of cookies.txt (Railway-friendly)
 
 
 @app.get("/api/youtube-cookies/status")
 async def youtube_cookies_status():
     from downloader import cookies_configured, cookies_recommended, is_railway_host, youtube_auth_status
+    configured = cookies_configured()
+    recommended = cookies_recommended()
     return {
-        "configured": cookies_configured(),
+        "configured": configured,
         "auth": youtube_auth_status(),
         "railway": is_railway_host(),
-        "cookies_recommended": cookies_recommended(),
+        "cookies_recommended": recommended,
         "hint": (
-            "Set YTDLP_COOKIES_BASE64 if preview/download hits YouTube bot checks."
-            if cookies_recommended() and not cookies_configured()
+            "YouTube is blocking this host. Paste Netscape cookies below, or set Railway variable YTDLP_COOKIES_BASE64."
+            if recommended and not configured
             else None
         ),
     }
@@ -273,14 +276,32 @@ async def youtube_cookies_status():
 
 @app.post("/api/youtube-cookies")
 async def upload_youtube_cookies(req: YoutubeCookiesRequest):
-    """Upload Netscape cookies.txt body for yt-dlp (throwaway Google account only)."""
+    """Upload Netscape cookies.txt (or base64) for yt-dlp — throwaway Google account only."""
+    import base64
+    import re
     from downloader import save_cookies_text
+
+    raw = (req.cookies or "").strip()
+    b64 = (req.cookies_base64 or "").strip()
+    if not raw and b64:
+        try:
+            compact = re.sub(r"\s+", "", b64)
+            raw = base64.b64decode(compact).decode("utf-8", errors="replace")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid cookies_base64: {e}")
+    if not raw:
+        raise HTTPException(status_code=400, detail="Provide cookies (Netscape text) or cookies_base64.")
+
     try:
-        path = save_cookies_text(req.cookies)
+        path = save_cookies_text(raw)
         return {
             "status": "success",
-            "message": f"YouTube cookies saved to {path.name}. Use a throwaway account only.",
+            "message": (
+                f"YouTube cookies saved to {path.name}. Downloads can use them immediately. "
+                "For persistence across Railway redeploys, also set YTDLP_COOKIES_BASE64."
+            ),
             "path": path.name,
+            "configured": True,
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

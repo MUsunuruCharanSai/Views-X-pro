@@ -264,7 +264,8 @@ body {
 }
 
 .api-warning-banner.visible,
-#api-key-warning.visible { display: flex; }
+#api-key-warning.visible,
+#cookies-warning.visible { display: flex; }
 .api-warning-icon { font-size: 18px; flex-shrink: 0; }
 .api-warning-banner a { color: var(--cyan); text-decoration: underline; cursor: pointer; margin-left: 6px; }
 

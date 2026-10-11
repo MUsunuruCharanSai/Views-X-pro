@@ -41,6 +41,13 @@
             <a id="api-key-warning-link">Add your key in Settings ↓</a></span>
         </div>
 
+        <!-- ── YouTube Cookies Warning (Railway / datacenter) ── -->
+        <div id="cookies-warning" class="api-warning-banner">
+            <span class="api-warning-icon">🍪</span>
+            <span id="cookies-warning-text">YouTube may block this server without cookies.
+            <a id="cookies-warning-link">Add YouTube cookies in Settings ↓</a></span>
+        </div>
+
         <!-- ── Hero URL Input ──────────────────────────────────── -->
         <section class="card hero-card">
             <div class="card-header">
@@ -238,6 +245,16 @@
                             <small>Exclusively powered by Google Gemini (gemini-3.5-flash with ultra-fast fallback). Get your free key at <a href="https://aistudio.google.com" target="_blank" style="color:var(--cyan); text-decoration:underline;">aistudio.google.com</a></small>
                         </div>
 
+                        <div class="form-group full-width">
+                            <label for="yt-cookies-input">YouTube Cookies (Railway / bot-check)</label>
+                            <textarea id="yt-cookies-input" rows="5" placeholder="Paste Netscape cookies.txt contents here (throwaway Google account only)…" style="width:100%;font-family:ui-monospace,monospace;font-size:12px;"></textarea>
+                            <small id="yt-cookies-status">Status: checking…</small>
+                            <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;">
+                                <button type="button" id="yt-cookies-save-btn" class="btn btn-secondary btn-sm">🍪 Save YouTube Cookies</button>
+                            </div>
+                            <small>Required on Railway when downloads say “confirm you’re not a bot”. Use a <strong>throwaway</strong> account. For persistence across redeploys, also set Railway variable <code>YTDLP_COOKIES_BASE64</code>.</small>
+                        </div>
+
                         <div class="form-group">
                             <label for="set-clip-count">Target Clip Count (1–10)</label>
                             <input type="number" id="set-clip-count" min="1" max="10" value="4">
@@ -418,6 +435,6 @@
     </main>
 </div>
 
-<script src="/static/app.js?v=10.3"></script>
+<script src="/static/app.js?v=10.4"></script>
 </body>
 </html>
