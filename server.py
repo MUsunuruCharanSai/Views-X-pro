@@ -190,21 +190,27 @@ async def get_video_preview_info(req: PreviewRequest):
     if not req.url:
         raise HTTPException(status_code=400, detail="YouTube URL is required.")
 
+    from downloader import extract_youtube_info, normalize_youtube_url
+    clean_url = normalize_youtube_url(req.url)
+
     def fetch_meta():
-        from downloader import extract_youtube_info
-        return extract_youtube_info(req.url)
+        return extract_youtube_info(clean_url)
 
     try:
         loop = asyncio.get_running_loop()
         info = await loop.run_in_executor(None, fetch_meta)
+        vid = info.get("id") or ""
+        thumb = info.get("thumbnail") or (f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else "")
         return {
             "title": info.get("title", "YouTube Video"),
-            "thumbnail": info.get("thumbnail") or f"https://i.ytimg.com/vi/{info.get('id')}/hqdefault.jpg",
-            "duration": info.get("duration", 0),
-            "uploader": info.get("uploader") or info.get("channel", "YouTube Creator")
+            "thumbnail": thumb,
+            "duration": info.get("duration", 0) or 0,
+            "uploader": info.get("uploader") or info.get("channel", "YouTube Creator"),
+            "url": clean_url,
+            "id": vid,
         }
     except Exception as e:
-        logger.warning(f"Could not fetch preview metadata for {req.url}: {e}")
+        logger.warning(f"Could not fetch preview metadata for {clean_url}: {e}")
         raise HTTPException(status_code=400, detail=f"Could not fetch video info: {e}")
 
 
@@ -497,6 +503,8 @@ async def manual_calibrate(req: CalibrateRequest):
 
 @app.post("/api/process")
 async def start_processing(req: ProcessRequest):
+    from downloader import normalize_youtube_url
+    req.url = normalize_youtube_url(req.url)
     if not req.url:
         raise HTTPException(status_code=400, detail="YouTube URL is required.")
 

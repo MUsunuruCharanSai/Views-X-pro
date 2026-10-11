@@ -304,22 +304,39 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // ── YouTube URL Validation ────────────────────────────────
+    // ── YouTube URL Validation / Normalize ────────────────────
+    function normalizeYouTubeUrl(raw) {
+        let url = (raw || "").trim();
+        // Strip wrapping quotes and markdown links
+        url = url.replace(/^['"]+|['"]+$/g, "");
+        const md = url.match(/^\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)$/);
+        if (md) url = md[2].trim();
+        const m = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([0-9A-Za-z_-]{11})/);
+        if (m) return `https://www.youtube.com/watch?v=${m[1]}`;
+        return url;
+    }
+
     function isValidYouTubeUrl(url) {
         if (!url) return false;
-        return /(youtube\.com|youtu\.be)\/(watch\?v=|shorts\/|embed\/)?([0-9A-Za-z_-]{11})/.test(url.trim());
+        return /(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([0-9A-Za-z_-]{11})/.test(normalizeYouTubeUrl(url));
     }
 
     // ── Video Preview Fetcher ─────────────────────────────────
-    async function fetchVideoPreview(url) {
+    async function fetchVideoPreview(rawUrl) {
+        const url = normalizeYouTubeUrl(rawUrl);
         if (!url || url === lastPreviewUrl || !isValidYouTubeUrl(url)) return;
-        lastPreviewUrl = url;
+
+        // Write cleaned URL back into the input so Process uses the same value
+        if (urlInput.value.trim() !== url) urlInput.value = url;
 
         previewTitle.textContent = "Fetching video info…";
+        previewUploader.textContent = "";
+        previewDuration.textContent = "";
         videoPreviewCard.classList.remove("hidden");
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        // YouTube metadata often takes 20–45s when bot-checks / retries run
+        const timeoutId = setTimeout(() => controller.abort(), 60000);
 
         try {
             const res = await fetch("/api/preview-info", {
@@ -329,8 +346,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 signal: controller.signal
             });
             clearTimeout(timeoutId);
-            if (!res.ok) return;
+            if (!res.ok) {
+                let detail = `Preview failed (${res.status})`;
+                try {
+                    const errBody = await res.json();
+                    detail = errBody.detail || detail;
+                } catch (_) { /* ignore */ }
+                previewTitle.textContent = "Could not load preview";
+                previewUploader.textContent = String(detail).slice(0, 180);
+                toast(detail, "warning");
+                return;
+            }
             const data = await res.json();
+            lastPreviewUrl = url;
 
             previewThumb.src = data.thumbnail;
             previewTitle.textContent = data.title;
@@ -340,18 +368,22 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (err) {
             clearTimeout(timeoutId);
             console.warn("Preview fetch failed or timed out:", err);
-            videoPreviewCard.classList.add("hidden");
+            previewTitle.textContent = "Preview timed out / failed";
+            previewUploader.textContent = "Try again — YouTube can be slow. Processing may still work.";
+            toast("Video preview timed out. You can still click Generate.", "warning");
         }
     }
 
     urlInput.addEventListener("blur", () => {
-        const url = urlInput.value.trim();
+        const url = normalizeYouTubeUrl(urlInput.value);
+        if (url && url !== urlInput.value.trim()) urlInput.value = url;
         fetchVideoPreview(url);
     });
 
     urlInput.addEventListener("paste", () => {
         setTimeout(() => {
-            const url = urlInput.value.trim();
+            const url = normalizeYouTubeUrl(urlInput.value);
+            if (url) urlInput.value = url;
             fetchVideoPreview(url);
         }, 150);
     });
@@ -562,7 +594,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // ── Core Pipeline & WebSocket ─────────────────────────────
     generateBtn.addEventListener("click", async () => {
-        const url = urlInput.value.trim();
+        const url = normalizeYouTubeUrl(urlInput.value);
+        urlInput.value = url;
         if (!url) { toast("Please paste a YouTube URL.", "warning"); return; }
         if (!isValidYouTubeUrl(url)) { toast("Invalid YouTube URL format. Check the URL and try again.", "warning"); return; }
 
