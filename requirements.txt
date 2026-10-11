@@ -1,7 +1,7 @@
 fastapi>=0.100.0
 uvicorn>=0.22.0
 websockets>=11.0
-yt-dlp>=2026.8.19
+yt-dlp[default]>=2026.8.19
 youtube-transcript-api>=1.0.0
 opencv-python-headless>=4.9.0
 requests>=2.31.0

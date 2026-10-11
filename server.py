@@ -60,6 +60,11 @@ async def lifespan(app: FastAPI):
     logger.info(f" Clip Duration Range    : {settings.get('min_clip_duration_sec')}s - {settings.get('max_clip_duration_sec')}s")
     logger.info(" Facecam Framing        : Desktop Streamer (Full-Frame 16:9) / IRL (Smart Face Crop)")
     logger.info(" Concurrency Model       : Single-Job Lock (Queue active)")
+    try:
+        from downloader import youtube_auth_status
+        logger.info(f" YouTube yt-dlp Auth   : {youtube_auth_status()}")
+    except Exception as auth_err:
+        logger.warning(f" YouTube yt-dlp Auth   : unavailable ({auth_err})")
     logger.info("================================================================")
     yield
     logger.info("Server shutting down.")
@@ -167,18 +172,8 @@ async def get_video_preview_info(req: PreviewRequest):
         raise HTTPException(status_code=400, detail="YouTube URL is required.")
 
     def fetch_meta():
-        import yt_dlp
-        from downloader import ytdlp_cookie_opts
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "nocheckcertificate": True,
-            "socket_timeout": 15,
-            **ytdlp_cookie_opts(),
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(req.url, download=False)
+        from downloader import extract_youtube_info
+        return extract_youtube_info(req.url)
 
     try:
         loop = asyncio.get_running_loop()
@@ -380,19 +375,11 @@ async def manual_calibrate(req: CalibrateRequest):
         loop = asyncio.get_running_loop()
 
         def run_calibration():
-            import yt_dlp
-            from downloader import ytdlp_cookie_opts
-            # Fetch channel_id
-            with yt_dlp.YoutubeDL({
-                "quiet": True,
-                "skip_download": True,
-                "socket_timeout": 15,
-                **ytdlp_cookie_opts(),
-            }) as ydl:
-                info = ydl.extract_info(req.youtube_url, download=False)
-                channel_id = info.get("channel_id") or info.get("uploader_id", "")
-                video_title = info.get("title", "")
-                uploader = info.get("uploader", "")
+            from downloader import extract_youtube_info
+            info = extract_youtube_info(req.youtube_url)
+            channel_id = info.get("channel_id") or info.get("uploader_id", "")
+            video_title = info.get("title", "")
+            uploader = info.get("uploader", "")
 
             if not channel_id:
                 return {"status": "error", "message": "Could not extract channel ID from URL."}

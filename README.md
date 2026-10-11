@@ -46,11 +46,10 @@ Create a `.env` file:
 ```env
 GEMINI_API_KEY=your_api_key_here
 APP_ENV=production
-# If YouTube blocks downloads, use signed-in browser cookies:
-YTDLP_COOKIES_FROM_BROWSER=chrome
+YTDLP_COOKIES_FILE=cookies.txt
 ```
 
-Close Chrome first if cookie access fails. On Railway, export a Netscape `cookies.txt` and set `YTDLP_COOKIES_FILE` instead (never commit that file).
+yt-dlp uses **default YouTube clients** first (avoids the “confirm you’re not a bot” path that `android`/`ios`/`web` often hit). For Railway hard blocks, add a Netscape `cookies.txt` from a **throwaway** Google account (never commit it; never use your main account).
 
 ### Run the Application
 
