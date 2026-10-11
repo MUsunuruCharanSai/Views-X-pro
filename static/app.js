@@ -286,8 +286,12 @@ document.addEventListener("DOMContentLoaded", () => {
             const data = await res.json();
             const auth = data.auth || "unknown";
             if (ytCookiesStatus) {
+                const insp = data.inspection;
+                const login = insp?.login_cookies?.length
+                    ? ` login=[${insp.login_cookies.join(", ")}]`
+                    : "";
                 ytCookiesStatus.textContent = data.configured
-                    ? `Status: configured (${auth})`
+                    ? `Status: configured (${auth})${login}`
                     : `Status: not configured (${auth})`;
             }
             if (cookiesWarning) {

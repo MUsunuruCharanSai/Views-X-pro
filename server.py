@@ -258,18 +258,41 @@ class YoutubeCookiesRequest(BaseModel):
 
 @app.get("/api/youtube-cookies/status")
 async def youtube_cookies_status():
-    from downloader import cookies_configured, cookies_recommended, is_railway_host, youtube_auth_status
+    from pathlib import Path as _Path
+    from downloader import (
+        cookies_configured,
+        cookies_recommended,
+        inspect_youtube_cookies,
+        is_railway_host,
+        resolve_cookie_opts,
+        youtube_auth_status,
+    )
     configured = cookies_configured()
     recommended = cookies_recommended()
+    inspection = None
+    opts = resolve_cookie_opts()
+    cookie_path = opts.get("cookiefile")
+    if cookie_path:
+        try:
+            inspection = inspect_youtube_cookies(
+                _Path(cookie_path).read_text(encoding="utf-8", errors="replace")
+            )
+        except OSError:
+            inspection = None
     return {
         "configured": configured,
         "auth": youtube_auth_status(),
         "railway": is_railway_host(),
         "cookies_recommended": recommended,
+        "inspection": inspection,
         "hint": (
             "YouTube is blocking this host. Paste Netscape cookies below, or set Railway variable YTDLP_COOKIES_BASE64."
             if recommended and not configured
-            else None
+            else (
+                "Cookies are loaded but may still be rejected if expired — re-export from youtube.com while logged in."
+                if configured and inspection and not inspection.get("ok")
+                else None
+            )
         ),
     }
 

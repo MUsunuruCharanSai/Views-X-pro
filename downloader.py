@@ -75,6 +75,62 @@ def _looks_like_netscape_cookies(text: str) -> bool:
     return any("\t" in line and "youtube" in line.lower() for line in t.splitlines() if line and not line.startswith("#"))
 
 
+# Cookies YouTube typically needs for a logged-in session on datacenter IPs
+_YT_LOGIN_COOKIE_NAMES = (
+    "SAPISID",
+    "__Secure-1PSID",
+    "__Secure-3PSID",
+    "SID",
+    "__Secure-1PSIDTS",
+    "LOGIN_INFO",
+)
+
+
+def inspect_youtube_cookies(text: str) -> Dict[str, Any]:
+    """Check Netscape cookie body for YouTube/Google login markers."""
+    names: set = set()
+    domains: set = set()
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 7:
+            continue
+        domain, name = parts[0].lower(), parts[5]
+        names.add(name)
+        domains.add(domain.lstrip("."))
+    has_yt = any("youtube.com" in d for d in domains)
+    has_google = any(d == "google.com" or d.endswith(".google.com") for d in domains)
+    login_hits = [n for n in _YT_LOGIN_COOKIE_NAMES if n in names]
+    ok = has_yt and len(login_hits) >= 2
+    return {
+        "ok": ok,
+        "has_youtube_domain": has_yt,
+        "has_google_domain": has_google,
+        "login_cookies": login_hits,
+        "cookie_count": len(names),
+    }
+
+
+def cookies_expired_or_weak_message(inspection: Optional[Dict[str, Any]] = None) -> str:
+    detail = ""
+    if inspection and not inspection.get("ok"):
+        detail = (
+            f" Cookie file looks weak/incomplete (youtube_domain={inspection.get('has_youtube_domain')}, "
+            f"login_markers={inspection.get('login_cookies') or []})."
+        )
+    return (
+        "YouTube still bot-checks this server even with cookies.txt — the session is likely "
+        "expired, incomplete, or from the wrong account."
+        f"{detail} "
+        "Re-export fresh Netscape cookies while signed into https://www.youtube.com "
+        "with a throwaway Google account (extension: 'Get cookies.txt LOCALLY'), "
+        "then paste again in Settings or set YTDLP_COOKIES_BASE64. "
+        "Do not use your main Google account."
+    )
+
+
 def materialize_cookies_from_env() -> Optional[Path]:
     """Write cookies from Railway env vars to a local Netscape file.
 
@@ -125,16 +181,29 @@ def materialize_cookies_from_env() -> Optional[Path]:
 
 def save_cookies_text(content: str) -> Path:
     """Persist uploaded Netscape cookies for local/Railway volume use."""
+    content = content.replace("\\n", "\n")
     if not _looks_like_netscape_cookies(content):
         raise ValueError(
             "Invalid cookies format. Export a Netscape cookies.txt "
             "(e.g. 'Get cookies.txt LOCALLY' browser extension) while signed into YouTube."
         )
+    inspection = inspect_youtube_cookies(content)
+    if not inspection["ok"]:
+        raise ValueError(
+            "Cookies file is missing YouTube login markers "
+            f"(found login cookies: {inspection['login_cookies'] or 'none'}; "
+            f"youtube.com domain: {inspection['has_youtube_domain']}). "
+            "Export again from youtube.com while logged in — include .youtube.com and .google.com cookies."
+        )
     dest = BASE_DIR / "cookies.txt"
-    dest.write_text(content.replace("\\n", "\n"), encoding="utf-8")
+    dest.write_text(content, encoding="utf-8")
     # Keep runtime copy in sync
     _RUNTIME_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
     _RUNTIME_COOKIES_PATH.write_text(dest.read_text(encoding="utf-8"), encoding="utf-8")
+    logger.info(
+        f"yt-dlp auth: saved cookies.txt ({inspection['cookie_count']} names, "
+        f"login={inspection['login_cookies']})"
+    )
     return dest
 
 
@@ -292,17 +361,17 @@ def extract_youtube_info(url: str, *, allow_oembed_fallback: bool = True) -> Dic
     url = normalize_youtube_url(url)
     cookie_opts = resolve_cookie_opts()
 
+    # NOTE: do not pass player_client="default" — that is not a valid yt-dlp client id
     attempts: List[Tuple[str, Optional[List[str]], bool]] = [
-        ("default", None, False),
+        ("auto", None, False),
         ("android_vr", ["android_vr"], False),
     ]
     if cookie_opts:
-        # Prefer cookies first when available (datacenter hosts)
         attempts = [
-            ("cookies+default+web_embedded", ["default", "web_embedded"], True),
+            ("cookies+auto", None, True),
+            ("cookies+web", ["web"], True),
             ("cookies+mweb", ["mweb"], True),
-            ("default", None, False),
-            ("android_vr", ["android_vr"], False),
+            ("cookies+web_safari", ["web_safari"], True),
         ]
 
     last_err: Optional[Exception] = None
@@ -433,29 +502,48 @@ class YouTubeDownloader:
         )
 
         cookie_opts = resolve_cookie_opts()
+        cookie_inspection: Optional[Dict[str, Any]] = None
+        if cookie_opts.get("cookiefile"):
+            try:
+                cookie_inspection = inspect_youtube_cookies(
+                    Path(cookie_opts["cookiefile"]).read_text(encoding="utf-8", errors="replace")
+                )
+                logger.info(
+                    f"Cookie inspection: ok={cookie_inspection['ok']} "
+                    f"login={cookie_inspection['login_cookies']} "
+                    f"count={cookie_inspection['cookie_count']}"
+                )
+            except OSError as e:
+                logger.warning(f"Could not inspect cookie file: {e}")
+
         if cookies_recommended() and not cookie_opts:
             logger.warning(
                 "No YouTube cookies configured on a datacenter-like host. "
                 "Will try anonymous download first; bot-check may still require YTDLP_COOKIES_BASE64."
             )
 
-        # Always try anonymous clients. Prefer cookies first when present.
+        # Valid yt-dlp clients only (never pass player_client="default").
+        # When cookies exist on Railway, skip anonymous retries — they always bot-fail and hide real errors.
         attempts: List[Tuple[str, Optional[List[str]], bool, str]] = []
         if cookie_opts:
             attempts.extend(
                 [
-                    ("cookies+default+hls", ["default", "web_embedded"], True, hls_merge_format),
+                    ("cookies+auto+hls", None, True, hls_merge_format),
+                    ("cookies+web+hls", ["web"], True, hls_merge_format),
                     ("cookies+mweb+hls", ["mweb"], True, hls_merge_format),
-                    ("cookies+default+progressive", ["default", "web_embedded"], True, progressive_format),
+                    ("cookies+web_safari+hls", ["web_safari"], True, hls_merge_format),
+                    ("cookies+web+progressive", ["web"], True, progressive_format),
+                    ("cookies+mweb+progressive", ["mweb"], True, progressive_format),
                 ]
             )
-        attempts.extend(
-            [
-                ("default+hls", None, False, hls_merge_format),
-                ("default+progressive", None, False, progressive_format),
-                ("android_vr+progressive", ["android_vr"], False, progressive_format),
-            ]
-        )
+        else:
+            attempts.extend(
+                [
+                    ("auto+hls", None, False, hls_merge_format),
+                    ("auto+progressive", None, False, progressive_format),
+                    ("android_vr+progressive", ["android_vr"], False, progressive_format),
+                ]
+            )
 
         errors: List[str] = []
         saw_bot_block = False
@@ -479,6 +567,15 @@ class YouTubeDownloader:
                 )
                 # Prefer HLS over https progressive (avoids GVS PO-token 403 on audio)
                 opts["format_sort"] = ["res", "proto:m3u8"]
+                # Browser-like UA helps some cookie sessions on datacenter IPs
+                if want_cookies:
+                    opts["http_headers"] = {
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                        ),
+                        "Accept-Language": "en-US,en;q=0.9",
+                    }
                 # Fewer parallel fragments on Railway to reduce bot-score / RAM spikes
                 if is_railway_host() or cookies_recommended():
                     opts["concurrent_fragment_downloads"] = 2
@@ -512,9 +609,16 @@ class YouTubeDownloader:
                 time.sleep(1.0)
         else:
             auth = youtube_auth_status()
-            detail = " | ".join(errors[-3:]) if errors else "unknown"
+            # Prefer cookie-attempt errors in the summary (not anonymous noise)
+            cookie_errs = [e for e in errors if e.startswith("cookies+")]
+            detail = " | ".join((cookie_errs or errors)[:3]) if errors else "unknown"
             if saw_bot_block and not cookie_opts:
                 raise RuntimeError(f"{cookies_setup_message()} (auth={auth})")
+            if saw_bot_block and cookie_opts:
+                raise RuntimeError(
+                    f"{cookies_expired_or_weak_message(cookie_inspection)} "
+                    f"(auth={auth}). Attempts: {detail}."
+                )
             raise RuntimeError(
                 f"All YouTube download strategies failed (auth={auth}). Recent errors: {detail}."
             )
