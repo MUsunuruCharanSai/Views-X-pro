@@ -16,12 +16,15 @@ from config import (
     DENOISE_FILTER,
     RESOLUTION_TIERS,
     TEMP_DIR,
+    get_ffmpeg_thread_count,
     get_like_path,
     get_logo_path,
     get_subscribe_path,
+    is_low_memory_host,
+    resolve_encode_tier,
 )
 from facecam_detector import FacecamDetector
-from utils import logger
+from utils import logger, resolve_ffprobe_bin
 
 
 def format_ass_time(seconds: float) -> str:
@@ -381,11 +384,20 @@ class FFmpegClipper:
             logger.debug(f"QSV probe exception: {e}")
             return False
 
+    @staticmethod
+    def _is_oom_kill(returncode: Optional[int]) -> bool:
+        """True when the OS killed FFmpeg (SIGKILL / OOM killer)."""
+        if returncode is None:
+            return False
+        # POSIX SIGKILL=-9; shells often report 137 (128+9); Windows may surface differently
+        return returncode in (-9, 9, 137, 250)
+
     def _get_video_dimensions(self, video_path: Path) -> Tuple[Optional[int], Optional[int], Optional[str]]:
         """Probe actual width, height, and level of encoded clip file via ffprobe."""
+        ffprobe = resolve_ffprobe_bin() or "ffprobe"
         try:
             cmd = [
-                "ffprobe", "-v", "quiet",
+                ffprobe, "-v", "quiet",
                 "-select_streams", "v:0",
                 "-show_entries", "stream=width,height,level",
                 "-of", "csv=p=0",
@@ -402,6 +414,60 @@ class FFmpegClipper:
         except Exception as e:
             logger.warning(f"Could not probe video dimensions for {video_path.name}: {e}")
         return None, None, None
+
+    def _probe_duration_sec(self, video_path: Path) -> Optional[float]:
+        ffprobe = resolve_ffprobe_bin() or "ffprobe"
+        try:
+            cmd = [
+                ffprobe, "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                str(video_path),
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, timeout=15)
+            dur = float((res.stdout or "").strip())
+            return dur if dur > 0 else None
+        except Exception as e:
+            logger.warning(f"Could not probe duration for {video_path.name}: {e}")
+            return None
+
+    def _validate_output_clip(
+        self,
+        out_filename: Path,
+        *,
+        expected_min_duration: float,
+        expected_w: int,
+        expected_h: int,
+    ) -> Tuple[bool, str]:
+        """Require a readable, non-corrupt MP4 before counting the clip as success."""
+        if not out_filename.exists():
+            return False, "output file missing"
+        size = out_filename.stat().st_size
+        if size < 50_000:  # < ~50KB is never a valid short clip
+            return False, f"output too small ({size} bytes)"
+
+        actual_w, actual_h, actual_lvl = self._get_video_dimensions(out_filename)
+        if not actual_w or not actual_h:
+            return False, "ffprobe could not read video dimensions (corrupt/incomplete encode)"
+
+        # Allow small encoder rounding; reject wildly wrong sizes (failed/truncated files)
+        if abs(actual_w - expected_w) > 16 or abs(actual_h - expected_h) > 16:
+            return False, f"unexpected dimensions {actual_w}x{actual_h} (wanted {expected_w}x{expected_h})"
+
+        dur = self._probe_duration_sec(out_filename)
+        if dur is None:
+            return False, "ffprobe could not read duration"
+        if dur < max(1.0, expected_min_duration * 0.5):
+            return False, f"duration too short ({dur:.1f}s < ~{expected_min_duration * 0.5:.1f}s)"
+
+        return True, f"{actual_w}x{actual_h}, {dur:.1f}s, H.264 level {actual_lvl}"
+
+    def _unlink_partial(self, path: Path) -> None:
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError as e:
+            logger.debug(f"Could not remove partial encode {path.name}: {e}")
 
     def cut_clips(
         self,
@@ -429,6 +495,14 @@ class FFmpegClipper:
         total_clips = len(refined_clips)
         transcript = transcript or []
 
+        requested_tier = resolution_tier
+        resolution_tier = resolve_encode_tier(resolution_tier)
+        if resolution_tier != requested_tier:
+            logger.warning(
+                f"[Memory Guard] Downgraded encode tier {requested_tier} → {resolution_tier} "
+                f"(low-memory / Railway host)."
+            )
+
         tier_info = RESOLUTION_TIERS.get(resolution_tier, RESOLUTION_TIERS[DEFAULT_RESOLUTION_TIER])
         target_w = tier_info["output_w"]
         target_h = tier_info["output_h"]
@@ -445,13 +519,16 @@ class FFmpegClipper:
             else:
                 logger.warning("[QSV Probe] Intel QSV hardware encoder unavailable/unsupported on this host. Skipping QSV, defaulting to CPU libx264.")
 
-        # Bug 5 fix: Thread budget control
-        num_threads = str(min(8, os.cpu_count() or 4))
+        # Keep thread count low — 8-thread 1440p libx264 OOMs Railway (SIGKILL)
+        num_threads = str(get_ffmpeg_thread_count())
+        queue_size = "64" if is_low_memory_host() else "512"
+        cpu_preset_primary = "veryfast" if is_low_memory_host() else "faster"
+        cpu_crf = "20" if is_low_memory_host() else "18"
 
         logger.info(
             f"[Resolution Tier & Rate Control Trace] Clipper initialized for tier '{resolution_tier}' -> "
-            f"Target Canvas: {target_w}x{target_h}, Rate Control: global_quality={DEFAULT_QSV_QUALITY} (QSV ICQ) / CRF={DEFAULT_CRF} (CPU fallback), "
-            f"H.264 Level: {h264_level}, Threads: {num_threads}"
+            f"Target Canvas: {target_w}x{target_h}, Rate Control: global_quality={DEFAULT_QSV_QUALITY} (QSV ICQ) / CRF={cpu_crf} (CPU), "
+            f"H.264 Level: {h264_level}, Threads: {num_threads}, low_mem={is_low_memory_host()}"
         )
 
         src_w, src_h, _ = self._get_video_dimensions(video_path)
@@ -754,7 +831,7 @@ class FFmpegClipper:
                 if self._qsv_available:
                     qsv_cmd = [
                         "ffmpeg", "-y",
-                        "-thread_queue_size", "512",
+                        "-thread_queue_size", queue_size,
                         "-ss", str(start_t),
                         "-t", str(duration),
                         "-i", str(video_path),
@@ -764,7 +841,7 @@ class FFmpegClipper:
                         "-c:v", "h264_qsv", "-preset", "medium",
                         "-global_quality", str(DEFAULT_QSV_QUALITY),
                         "-pix_fmt", "nv12", "-g", "60",
-                        "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
+                        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
                         *audio_filter_args,
                         "-shortest",
                         "-t", str(out_duration),
@@ -781,18 +858,24 @@ class FFmpegClipper:
                         else:
                             err_tail = "\n".join((result.stderr or "").strip().splitlines()[-6:])
                             logger.warning(f"QSV render returned error code {result.returncode} for Clip {clip_num}. Error: {err_tail}")
-                            if "Cannot allocate memory" in (result.stderr or "") or result.returncode in (4294967284, -12):
-                                logger.warning(f"Intel QSV ran out of hardware surface memory for tier '{resolution_tier}'. Disabling QSV for remaining clips in this run to save time.")
+                            self._unlink_partial(out_filename)
+                            if (
+                                "Cannot allocate memory" in (result.stderr or "")
+                                or result.returncode in (4294967284, -12)
+                                or self._is_oom_kill(result.returncode)
+                            ):
+                                logger.warning(f"Intel QSV OOM/SIGKILL for tier '{resolution_tier}'. Disabling QSV for remaining clips.")
                                 self._qsv_available = False
                     except subprocess.TimeoutExpired:
                         logger.warning(f"QSV encode timed out for Clip {clip_num} after {encode_timeout}s. Falling back to CPU for this clip...")
+                        self._unlink_partial(out_filename)
                         self._qsv_available = False
 
-                # 2. Secondary Attempt: CPU H.264 with CRF 18 (-preset faster)
+                # 2. Secondary Attempt: CPU H.264 (low-mem: veryfast/CRF20/2 threads)
                 if not clip_rendered_ok:
                     cpu_cmd = [
                         "ffmpeg", "-y",
-                        "-thread_queue_size", "512",
+                        "-thread_queue_size", queue_size,
                         "-threads", num_threads,
                         "-ss", str(start_t),
                         "-t", str(duration),
@@ -800,10 +883,10 @@ class FFmpegClipper:
                         *logo_input_args,
                         *filter_args,
                         "-profile:v", "high", "-level", h264_level,
-                        "-c:v", "libx264", "-preset", "faster", "-crf", "18",
+                        "-c:v", "libx264", "-preset", cpu_preset_primary, "-crf", cpu_crf,
                         "-maxrate", max_bitrate, "-bufsize", bufsize,
                         "-pix_fmt", "yuv420p", "-g", "60",
-                        "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
+                        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
                         *audio_filter_args,
                         "-shortest",
                         "-t", str(out_duration),
@@ -811,35 +894,45 @@ class FFmpegClipper:
                         "-avoid_negative_ts", "make_zero",
                         str(out_filename)
                     ]
-                    
+
                     try:
                         cpu_res = subprocess.run(cpu_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=encode_timeout)
                         if cpu_res.returncode == 0:
-                            encode_mode_used = "CPU libx264 (-preset faster)"
+                            encode_mode_used = f"CPU libx264 (-preset {cpu_preset_primary})"
                             clip_rendered_ok = True
                         else:
                             err_tail = "\n".join((cpu_res.stderr or "").strip().splitlines()[-6:])
-                            logger.warning(f"CPU libx264 (-preset faster) returned error {cpu_res.returncode} for Clip {clip_num}. Error: {err_tail}")
+                            logger.warning(
+                                f"CPU libx264 (-preset {cpu_preset_primary}) returned error {cpu_res.returncode} "
+                                f"for Clip {clip_num}. Error: {err_tail}"
+                            )
+                            self._unlink_partial(out_filename)
+                            if self._is_oom_kill(cpu_res.returncode):
+                                logger.error(
+                                    f"Clip {clip_num}: FFmpeg SIGKILL/OOM during CPU encode "
+                                    f"(threads={num_threads}, tier={resolution_tier}). Retrying leaner preset."
+                                )
                     except subprocess.TimeoutExpired:
-                        logger.warning(f"CPU libx264 (-preset faster) timed out for Clip {clip_num} after {encode_timeout}s.")
+                        logger.warning(f"CPU libx264 (-preset {cpu_preset_primary}) timed out for Clip {clip_num} after {encode_timeout}s.")
+                        self._unlink_partial(out_filename)
 
-                # 3. Tertiary Attempt: Intermediate CPU H.264 with `-preset veryfast` (Bug 5 fix: intermediate tier retaining subtitles & logo)
+                # 3. Tertiary: ultrafast + 1 thread (OOM recovery path, keeps filters)
                 if not clip_rendered_ok:
-                    logger.warning(f"Clip {clip_num}: Retrying with intermediate CPU libx264 (-preset veryfast)...")
-                    veryfast_cmd = [
+                    logger.warning(f"Clip {clip_num}: Retrying lean CPU libx264 (-preset ultrafast, 1 thread)...")
+                    lean_cmd = [
                         "ffmpeg", "-y",
-                        "-thread_queue_size", "512",
-                        "-threads", num_threads,
+                        "-thread_queue_size", "32",
+                        "-threads", "1",
                         "-ss", str(start_t),
                         "-t", str(duration),
                         "-i", str(video_path),
                         *logo_input_args,
                         *filter_args,
                         "-profile:v", "high", "-level", h264_level,
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
                         "-maxrate", max_bitrate, "-bufsize", bufsize,
                         "-pix_fmt", "yuv420p", "-g", "60",
-                        "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
+                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
                         *audio_filter_args,
                         "-shortest",
                         "-t", str(out_duration),
@@ -848,51 +941,64 @@ class FFmpegClipper:
                         str(out_filename)
                     ]
                     try:
-                        vf_res = subprocess.run(veryfast_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=encode_timeout)
-                        if vf_res.returncode == 0:
-                            encode_mode_used = "CPU libx264 (-preset veryfast)"
+                        lean_res = subprocess.run(lean_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=encode_timeout)
+                        if lean_res.returncode == 0:
+                            encode_mode_used = "CPU libx264 (-preset ultrafast, 1 thread)"
                             clip_rendered_ok = True
                         else:
-                            err_tail = "\n".join((vf_res.stderr or "").strip().splitlines()[-6:])
-                            logger.warning(f"CPU libx264 (-preset veryfast) returned error {vf_res.returncode} for Clip {clip_num}. Error: {err_tail}")
+                            err_tail = "\n".join((lean_res.stderr or "").strip().splitlines()[-6:])
+                            logger.warning(f"CPU ultrafast returned error {lean_res.returncode} for Clip {clip_num}. Error: {err_tail}")
+                            self._unlink_partial(out_filename)
                     except subprocess.TimeoutExpired:
-                        logger.warning(f"CPU libx264 (-preset veryfast) timed out for Clip {clip_num} after {encode_timeout}s.")
+                        logger.warning(f"CPU ultrafast timed out for Clip {clip_num} after {encode_timeout}s.")
+                        self._unlink_partial(out_filename)
 
-                # 4. Quaternary Attempt: Safe Fallback (Bare center crop, no subtitles/logo)
+                # 4. Quaternary: Safe bare center-crop (no subs/logo), 1 thread
                 if not clip_rendered_ok:
                     logger.warning(
                         f"CPU libx264 render failed for Clip {clip_num}. "
-                        f"Retrying bare safe fallback (center-crop to {target_w}x{target_h})..."
+                        f"Retrying bare safe fallback (center-crop to {target_w}x{target_h}, 1 thread)..."
                     )
                     safe_crop_w = int(src_h * 9.0 / 16.0)
                     safe_crop_x = max(0, (src_w - safe_crop_w) // 2)
                     fallback_filter = (
                         f"crop={safe_crop_w}:{src_h}:{safe_crop_x}:0,"
-                        f"scale={target_w}:{target_h}:flags=lanczos"
+                        f"scale={target_w}:{target_h}:flags=bilinear"
                     )
                     fallback_cmd = [
                         "ffmpeg", "-y",
-                        "-threads", num_threads,
+                        "-threads", "1",
                         "-ss", str(start_t),
                         "-i", str(video_path),
                         "-t", str(duration),
                         "-vf", fallback_filter,
                         "-profile:v", "high", "-level", h264_level,
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
                         "-maxrate", max_bitrate, "-bufsize", bufsize,
                         "-pix_fmt", "yuv420p", "-g", "60",
-                        "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
+                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
                         "-af", "aresample=async=1", "-shortest",
                         "-movflags", "+faststart",
                         "-avoid_negative_ts", "make_zero",
                         str(out_filename)
                     ]
                     try:
-                        subprocess.run(fallback_cmd, check=True, timeout=encode_timeout)
-                        encode_mode_used = "CPU libx264 (Safe Bare Fallback)"
-                        clip_rendered_ok = True
-                    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as fb_err:
-                        logger.error(f"Safe fallback encode failed or timed out for Clip {clip_num}: {fb_err}")
+                        fb_res = subprocess.run(
+                            fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=encode_timeout
+                        )
+                        if fb_res.returncode == 0:
+                            encode_mode_used = "CPU libx264 (Safe Bare Fallback)"
+                            clip_rendered_ok = True
+                        else:
+                            err_tail = "\n".join((fb_res.stderr or "").strip().splitlines()[-6:])
+                            logger.error(
+                                f"Safe fallback encode failed for Clip {clip_num} "
+                                f"(code={fb_res.returncode}, oom={self._is_oom_kill(fb_res.returncode)}): {err_tail}"
+                            )
+                            self._unlink_partial(out_filename)
+                    except subprocess.TimeoutExpired:
+                        logger.error(f"Safe fallback encode timed out for Clip {clip_num} after {encode_timeout}s.")
+                        self._unlink_partial(out_filename)
 
                 # Clean up temporary ASS files
                 for tmp_ass in [ass_filename, flash_ass_filename]:
@@ -902,17 +1008,30 @@ class FFmpegClipper:
                     except Exception as cleanup_err:
                         logger.debug(f"ASS subtitle cleanup notice for Clip {clip_num} ({tmp_ass.name}): {cleanup_err}")
 
-                # Verify rendered output file
-                if out_filename.exists() and out_filename.stat().st_size > 0:
-                    actual_w, actual_h, actual_lvl = self._get_video_dimensions(out_filename)
-                    elapsed_clip_sec = time.time() - clip_start_time_stamp
-                    logger.info(
-                        f"Clip {clip_num} generated successfully ({resolution_tier}) via {encode_mode_used} in {elapsed_clip_sec:.1f}s: "
-                        f"{out_filename.name} (Verified: {actual_w}x{actual_h}, H.264 level {actual_lvl})"
+                # Strict validation — never report success for corrupt/partial SIGKILL leftovers
+                if clip_rendered_ok:
+                    ok, detail = self._validate_output_clip(
+                        out_filename,
+                        expected_min_duration=float(duration),
+                        expected_w=target_w,
+                        expected_h=target_h,
                     )
-                    output_files.append(out_filename)
+                    if ok:
+                        elapsed_clip_sec = time.time() - clip_start_time_stamp
+                        logger.info(
+                            f"Clip {clip_num} generated successfully ({resolution_tier}) via {encode_mode_used} "
+                            f"in {elapsed_clip_sec:.1f}s: {out_filename.name} (Verified: {detail})"
+                        )
+                        output_files.append(out_filename)
+                    else:
+                        logger.error(
+                            f"Clip {clip_num} FAILED validation after encode ({encode_mode_used}): {detail}. "
+                            f"Excluding from results."
+                        )
+                        self._unlink_partial(out_filename)
                 else:
-                    logger.error(f"Clip {clip_num} output file missing or zero bytes after render: {out_filename}")
+                    logger.error(f"Clip {clip_num} encode failed all strategies; no valid output produced.")
+                    self._unlink_partial(out_filename)
 
             except Exception as e:
                 logger.error(f"Failed to generate Clip {clip_num}/{total_clips} ({start_t}s): {e}. Skipping clip.")

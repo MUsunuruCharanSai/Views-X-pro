@@ -65,7 +65,9 @@ The project supports Railway deployment using the included `Dockerfile` and `rai
 
 Configure your `GEMINI_API_KEY` environment variable and generate a public domain in Railway settings.
 
-**Note:** Video processing requires sufficient memory and CPU resources. Temporary files may be lost when the service restarts unless persistent storage is configured.
+On Railway the image sets `FFMPEG_LOW_MEMORY=1` and `FFMPEG_THREADS=2`, defaults to **1080p**, and auto-downgrades 1440p/4K to avoid FFmpeg `SIGKILL` OOM. Clips are ffprobe-validated before success.
+
+**Note:** Temporary files may be lost on redeploy unless you attach a persistent volume. Prefer ≥2 GB RAM.
 
 ## 📄 License
 

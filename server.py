@@ -53,7 +53,13 @@ async def lifespan(app: FastAPI):
     logger.info("================================================================")
     logger.info(" Target Hardware        : Intel Core i5-8250U / UHD 620 (QSV `h264_qsv`)")
     logger.info(f" Active LLM Provider    : {api_status}")
-    logger.info(f" Selected Resolution    : {tier} ({RESOLUTION_TIERS.get(tier, {}).get('output_w')}x{RESOLUTION_TIERS.get(tier, {}).get('output_h')})")
+    from config import is_low_memory_host, resolve_encode_tier
+    encode_tier = resolve_encode_tier(tier)
+    logger.info(
+        f" Selected Resolution    : {tier} → encode {encode_tier} "
+        f"({RESOLUTION_TIERS.get(encode_tier, {}).get('output_w')}x{RESOLUTION_TIERS.get(encode_tier, {}).get('output_h')})"
+        f"{' [low-memory host]' if is_low_memory_host() else ''}"
+    )
     logger.info(f" Target Clip Count      : {settings.get('target_clip_count')}")
     logger.info(f" Candidate Clip Spacing : >= {settings.get('min_clip_spacing_seconds')}s")
     logger.info(f" Min Confidence Score   : >= {settings.get('min_confidence_score')}")

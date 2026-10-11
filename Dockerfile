@@ -3,7 +3,9 @@ FROM python:3.11-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    APP_ENV=production
+    APP_ENV=production \
+    FFMPEG_LOW_MEMORY=1 \
+    FFMPEG_THREADS=2
 
 WORKDIR /app
 

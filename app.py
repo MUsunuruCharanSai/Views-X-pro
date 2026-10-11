@@ -7,7 +7,8 @@ from typing import Any, Callable, Dict, Optional
 
 from analyzer import VideoAnalyzer, _detect_content_type, clear_transcript_cache
 from clipper import FFmpegClipper
-from config import DEFAULT_RESOLUTION_TIER
+from config import DEFAULT_RESOLUTION_TIER, resolve_encode_tier
+from utils import resolve_ffprobe_bin
 from downloader import YouTubeDownloader
 from facecam_calibration import FacecamCalibrator
 from settings_store import load_settings
@@ -74,7 +75,12 @@ class PipelineOrchestrator:
             # Load settings dynamically at job start
             settings = load_settings()
             effective_api_key = self.api_key or settings.get("gemini_api_key", "")
-            effective_tier = resolution_tier or settings.get("resolution_tier", DEFAULT_RESOLUTION_TIER)
+            requested_tier = resolution_tier or settings.get("resolution_tier", DEFAULT_RESOLUTION_TIER)
+            effective_tier = resolve_encode_tier(requested_tier)
+            if effective_tier != requested_tier:
+                logger.warning(
+                    f"[Memory Guard] Requested {requested_tier} downgraded to {effective_tier} for this host."
+                )
 
             # Stage 1: Downloading Video
             self.emit_progress("Downloading Video", 10.0, f"Fetching video ({effective_tier}) via yt-dlp...")
@@ -87,8 +93,9 @@ class PipelineOrchestrator:
                 raise InterruptedError("Cancelled by user.")
 
             # Get total video duration using ffprobe
+            ffprobe = resolve_ffprobe_bin() or "ffprobe"
             dur_cmd = [
-                "ffprobe", "-v", "quiet",
+                ffprobe, "-v", "quiet",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)
             ]

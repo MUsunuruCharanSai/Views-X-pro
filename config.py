@@ -108,7 +108,7 @@ RESOLUTION_TIERS = {
         "target_bitrate": "8M",
         "max_bitrate": "10M",
         "bufsize": "16M",
-        "label": "1080p (Fast)"
+        "label": "1080p (Recommended)"
     },
     "1440p": {
         "height": 1440,
@@ -118,7 +118,7 @@ RESOLUTION_TIERS = {
         "target_bitrate": "16M",
         "max_bitrate": "20M",
         "bufsize": "32M",
-        "label": "1440p (Recommended)"
+        "label": "1440p (High RAM)"
     },
     "4k": {
         "height": 2160,
@@ -131,7 +131,34 @@ RESOLUTION_TIERS = {
         "label": "4K (Best Quality, Slower)"
     },
 }
-DEFAULT_RESOLUTION_TIER = "1440p"
+# 1080p is the safe default for Railway / low-memory CPU encoding (no QSV)
+DEFAULT_RESOLUTION_TIER = "1080p"
+
+# FFmpeg thread budget — keep low to avoid OOM/SIGKILL on small containers
+def get_ffmpeg_thread_count() -> int:
+    raw = os.environ.get("FFMPEG_THREADS", "").strip()
+    if raw.isdigit():
+        return max(1, min(8, int(raw)))
+    low_mem = os.environ.get("FFMPEG_LOW_MEMORY", "").strip() in ("1", "true", "yes")
+    on_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+    if low_mem or on_railway:
+        return 2
+    return min(2, os.cpu_count() or 2)
+
+
+def is_low_memory_host() -> bool:
+    return (
+        os.environ.get("FFMPEG_LOW_MEMORY", "").strip() in ("1", "true", "yes")
+        or bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+    )
+
+
+def resolve_encode_tier(tier: str) -> str:
+    """Downgrade heavy tiers on memory-constrained hosts (Railway)."""
+    tier = tier if tier in RESOLUTION_TIERS else DEFAULT_RESOLUTION_TIER
+    if is_low_memory_host() and tier in ("1440p", "4k"):
+        return "1080p"
+    return tier
 
 # Quality & Denoise Tuning
 DEFAULT_CRF = 18          # CPU libx264 high-quality CRF (18 = near-lossless, better than 19)
