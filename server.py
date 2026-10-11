@@ -61,6 +61,12 @@ async def lifespan(app: FastAPI):
     logger.info(" Facecam Framing        : Desktop Streamer (Full-Frame 16:9) / IRL (Smart Face Crop)")
     logger.info(" Concurrency Model       : Single-Job Lock (Queue active)")
     try:
+        from utils import ensure_ffmpeg_on_path
+        ffmpeg_bin = ensure_ffmpeg_on_path()
+        logger.info(f" FFmpeg                : {ffmpeg_bin or 'NOT FOUND — downloads/encoding will fail'}")
+    except Exception as ff_err:
+        logger.warning(f" FFmpeg                : unavailable ({ff_err})")
+    try:
         from downloader import youtube_auth_status
         logger.info(f" YouTube yt-dlp Auth   : {youtube_auth_status()}")
     except Exception as auth_err:

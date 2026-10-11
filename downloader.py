@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import yt_dlp
 
 from config import BASE_DIR, DEFAULT_RESOLUTION_TIER, DOWNLOADS_DIR, RESOLUTION_TIERS, TEMP_DIR
-from utils import logger
+from utils import ensure_ffmpeg_on_path, logger, resolve_ffmpeg_bin
 
 
 def normalize_youtube_url(url: str) -> str:
@@ -85,6 +85,9 @@ def build_ydl_base_opts(
     trigger YouTube bot challenges. Prefer yt-dlp default clients (visionos/m3u8).
     Never pair cookies with the tv client.
     """
+    ensure_ffmpeg_on_path()
+    ffmpeg_bin = resolve_ffmpeg_bin()
+
     opts: Dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
@@ -94,6 +97,9 @@ def build_ydl_base_opts(
         "fragment_retries": 10,
         **_js_runtime_opts(),
     }
+    # Critical: without this, bestvideo+bestaudio merge fails and looks like a YouTube bot error
+    if ffmpeg_bin:
+        opts["ffmpeg_location"] = str(Path(ffmpeg_bin).parent)
 
     if player_clients:
         opts["extractor_args"] = {"youtube": {"player_client": player_clients}}
@@ -202,6 +208,14 @@ class YouTubeDownloader:
         tier_info = RESOLUTION_TIERS.get(resolution_tier, RESOLUTION_TIERS[DEFAULT_RESOLUTION_TIER])
         max_height = tier_info["height"]
 
+        ffmpeg_bin = ensure_ffmpeg_on_path()
+        if not ffmpeg_bin:
+            raise RuntimeError(
+                "FFmpeg not found. Install FFmpeg and ensure it is on PATH, "
+                "or set FFMPEG_PATH to ffmpeg.exe. yt-dlp cannot merge video+audio without it."
+            )
+        logger.info(f"FFmpeg for yt-dlp: {ffmpeg_bin}")
+
         dur_label = f" (first {int(max_duration_sec)}s)" if max_duration_sec else ""
         logger.info(f"Initiating yt-dlp download for ({resolution_tier} max {max_height}p{dur_label}): {url}")
         logger.info(f"YouTube auth mode: {youtube_auth_status()}")
@@ -211,8 +225,12 @@ class YouTubeDownloader:
         vid_match = re.search(r"[?&]v=([0-9A-Za-z_-]{11})", url)
         video_id = vid_match.group(1) if vid_match else None
         if video_id and not max_duration_sec:
-            existing = list(DOWNLOADS_DIR.glob(f"{video_id}_*.mp4")) + list(DOWNLOADS_DIR.glob(f"{video_id}.mp4"))
-            for cand in existing:
+            # Ignore yt-dlp temp fragments (*.f616.mp4, *.part, etc.) from failed merges
+            candidates = list(DOWNLOADS_DIR.glob(f"{video_id}_*.mp4")) + list(DOWNLOADS_DIR.glob(f"{video_id}.mp4"))
+            for cand in candidates:
+                name = cand.name
+                if re.search(r"\.f\d+\.", name) or name.endswith(".part") or ".ytdl" in name:
+                    continue
                 if cand.is_file() and cand.stat().st_size > 10 * 1024 * 1024:
                     logger.info(f"Using existing downloaded video: {cand.name} ({cand.stat().st_size / (1024*1024):.1f} MB)")
                     if self.progress_callback:
@@ -228,29 +246,36 @@ class YouTubeDownloader:
 
         out_template = str(DOWNLOADS_DIR / "%(id)s_%(title).50s.%(ext)s")
         sub_template = str(TEMP_DIR / "%(id)s.%(ext)s")
-        format_str = (
+        # Prefer HLS (m3u8) for BOTH video+audio — https audio streams often 403 without PO tokens
+        hls_merge_format = (
+            f"bestvideo[height<={max_height}][protocol^=m3u8]+bestaudio[protocol^=m3u8]/"
+            f"bestvideo*[height<={max_height}][protocol^=m3u8]+bestaudio[protocol^=m3u8]/"
+            f"best[height<={max_height}][protocol^=m3u8]/"
             f"bestvideo[height<={max_height}]+bestaudio/"
-            f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/"
-            f"best[height<={max_height}]/"
+            f"best[height<={max_height}]/best"
+        )
+        progressive_format = (
             f"best[height<={max_height}][ext=mp4]/"
-            f"best"
+            f"best[height<={max_height}]/"
+            f"best[ext=mp4]/best"
         )
 
         cookie_opts = resolve_cookie_opts()
-        # Default clients first — forced android/ios/web/tv currently bot-challenge hard.
-        attempts: List[Tuple[str, Optional[List[str]], bool]] = [
-            ("default", None, False),
-            ("android_vr", ["android_vr"], False),
-            ("default+web_embedded+cookies", ["default", "web_embedded"], True),
-            ("mweb+cookies", ["mweb"], True),
+        # (label, clients, want_cookies, format_str)
+        attempts: List[Tuple[str, Optional[List[str]], bool, str]] = [
+            ("default+hls", None, False, hls_merge_format),
+            ("default+progressive", None, False, progressive_format),
+            ("android_vr+progressive", ["android_vr"], False, progressive_format),
+            ("default+web_embedded+cookies", ["default", "web_embedded"], True, hls_merge_format),
+            ("mweb+cookies", ["mweb"], True, hls_merge_format),
         ]
 
-        last_err: Optional[Exception] = None
+        errors: List[str] = []
         video_path: Optional[Path] = None
         title = "YouTube Video"
         channel_id = ""
 
-        for label, clients, want_cookies in attempts:
+        for label, clients, want_cookies, format_str in attempts:
             if want_cookies and not cookie_opts:
                 continue
             try:
@@ -264,6 +289,8 @@ class YouTubeDownloader:
                     progress_hooks=[self._ydl_hook],
                     max_duration_sec=max_duration_sec,
                 )
+                # Prefer HLS over https progressive (avoids GVS PO-token 403 on audio)
+                opts["format_sort"] = ["res", "proto:m3u8"]
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                     title = info.get("title", "YouTube Video")
@@ -271,26 +298,33 @@ class YouTubeDownloader:
                     filename = ydl.prepare_filename(info)
                     video_path = Path(filename)
                     if not video_path.exists():
-                        alt_path = video_path.with_suffix(".mp4")
-                        if alt_path.exists():
-                            video_path = alt_path
+                        # Merged output is often forced to .mp4
+                        for alt in (
+                            video_path.with_suffix(".mp4"),
+                            video_path.with_suffix(".webm"),
+                            video_path.with_suffix(".mkv"),
+                        ):
+                            if alt.exists():
+                                video_path = alt
+                                break
                         else:
                             raise RuntimeError(
-                                f"Downloaded video file not found at expected path: {video_path} "
-                                f"(also checked {alt_path})."
+                                f"Downloaded video file not found at expected path: {video_path}"
                             )
                 logger.info(f"yt-dlp succeeded with {label}")
                 break
             except Exception as err:
-                last_err = err
+                errors.append(f"{label}: {err}")
                 logger.warning(f"yt-dlp attempt {label} failed: {err}")
-                time.sleep(1.5)
+                time.sleep(1.0)
         else:
             auth = youtube_auth_status()
+            detail = " | ".join(errors[-3:]) if errors else "unknown"
             raise RuntimeError(
-                f"All YouTube download strategies failed (auth={auth}). Last error: {last_err}. "
-                "If this is Railway/datacenter IP: upload a fresh Netscape cookies.txt "
-                "(throwaway Google account) as YTDLP_COOKIES_FILE / ./cookies.txt."
+                f"All YouTube download strategies failed (auth={auth}). "
+                f"Recent errors: {detail}. "
+                "Ensure FFmpeg is installed. On Railway/datacenter IPs, add cookies.txt "
+                "(throwaway Google account) via YTDLP_COOKIES_FILE."
             )
 
         from utils import get_video_dimensions
